@@ -495,13 +495,29 @@ def run_feature_engineering(input_path: str, output_path: str):
     logging.info("🚀 شروع مهندسی ویژگی (نسخه اصلاح شده با احساسات Broadcasting)...")
     logging.info(f"📋 پارامترهای اندیکاتور: {INDICATOR_PARAMS}")
     
-    # یافتن آخرین فایل داده
-    list_of_files = glob.glob(os.path.join(input_path, 'master_*_data_*.parquet'))
+    # # یافتن آخرین فایل داده
+    # list_of_files = glob.glob(os.path.join(input_path, 'master_*_data_*.parquet'))
+    # if not list_of_files:
+    #     logging.error(f"❌ هیچ فایل داده اصلی در مسیر '{input_path}' یافت نشد.")
+    #     return
+    # latest_file = max(list_of_files, key=os.path.getctime)
+    # logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
+
+        # یافتن همه فایل‌های داده
+    list_of_files = sorted(glob.glob(os.path.join(input_path, 'master_*_data_*.parquet')))
     if not list_of_files:
         logging.error(f"❌ هیچ فایل داده اصلی در مسیر '{input_path}' یافت نشد.")
         return
-    latest_file = max(list_of_files, key=os.path.getctime)
-    logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
+
+    for latest_file in list_of_files:
+        logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
+        try:
+            df = pd.read_parquet(latest_file)
+            # ادامه پردازش روی df
+        except Exception as e:
+            logging.error(f"❌ خطا در پردازش {os.path.basename(latest_file)}: {e}")
+
+
     
     # خواندن داده
     df = pd.read_parquet(latest_file)
