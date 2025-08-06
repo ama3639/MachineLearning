@@ -503,19 +503,20 @@ def run_feature_engineering(input_path: str, output_path: str):
     # latest_file = max(list_of_files, key=os.path.getctime)
     # logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
 
-        # یافتن همه فایل‌های داده
+        # یافتن تمام فایل‌های master
     list_of_files = sorted(glob.glob(os.path.join(input_path, 'master_*_data_*.parquet')))
     if not list_of_files:
         logging.error(f"❌ هیچ فایل داده اصلی در مسیر '{input_path}' یافت نشد.")
         return
 
     for latest_file in list_of_files:
-        logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
+        logging.info(f"📂 در حال خواندن و پردازش فایل: {os.path.basename(latest_file)}")
         try:
             df = pd.read_parquet(latest_file)
-            # ادامه پردازش روی df
+            # اجرای کل فرآیند مهندسی ویژگی برای df
+            # پیشنهاد می‌کنم تابعی مثل process_dataframe(df) بسازی که کد قبلی رو روش اجرا کنه
         except Exception as e:
-            logging.error(f"❌ خطا در پردازش {os.path.basename(latest_file)}: {e}")
+            logging.error(f"❌ خطا در خواندن یا پردازش فایل '{latest_file}': {e}")
 
 
     
