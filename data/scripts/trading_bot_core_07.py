@@ -764,6 +764,7 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     try:
         group = df.copy()
         
+        
         # 🔧 اصلاح مشکل dtype - تبدیل volume به float64
         group['volume'] = group['volume'].astype('float64')
         group['high'] = group['high'].astype('float64')
