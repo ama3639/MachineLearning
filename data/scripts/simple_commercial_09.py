@@ -2,9 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-سیستم تجاری‌سازی ساده مشاور هوشمند (نسخه 1.1 - اصلاح شده)
+سیستم تجاری‌سازی ساده مشاور هوشمند (نسخه 1.2 - اصلاح Authentication)
 
-قابلیت‌های کلیدی:
+🔧 تغییرات این نسخه:
+- رفع مشکل Authentication در API calls
+- بهبود Session Management  
+- اضافه کردن password caching موقت
+- بهبود Error Handling در API Integration
+
+سایر ویژگی‌ها بدون تغییر:
 - Web Interface کامل (Registration, Login, Dashboard)
 - User Management (SQLite Database)
 - Subscription Plans (رایگان، پایه، حرفه‌ای)
@@ -13,20 +19,6 @@
 - API Integration (اتصال با prediction API)
 - Analytics & Reporting
 - Mobile-Friendly Design
-
-نکات فنی:
-- Flask-based Web Application
-- Embedded HTML Templates (بدون نیاز به فایل‌های جداگانه)
-- SQLite Database (آماده برای 500 کاربر)
-- Bootstrap UI (responsive design)
-- Session Management
-- CSRF Protection آماده
-
-اصلاحات v1.1:
-- سازگاری با prediction_api_commercial_05.py
-- یکسان سازی database schema
-- بهبود API integration
-- رفع مشکل database path
 """
 
 import os
@@ -110,17 +102,20 @@ logging.basicConfig(
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
+# 🔧 متغیر global برای caching password موقت (حل مشکل authentication)
+# نکته: این روش موقت است، در production باید از روش‌های امن‌تر استفاده شود
+session_passwords = {}  # {session_id: password}
+
 # --- Database Management ---
 def init_database():
     """ایجاد database کامل سیستم (سازگار با commercial API)"""
-    # 🔧 تغییر نام database برای سازگاری
-    db_path = os.path.join(USERS_PATH, 'users.db')  # از commercial.db به users.db
+    db_path = os.path.join(USERS_PATH, 'users.db')
     
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # 🔧 جدول کاربران (سازگار با commercial API)
+        # جدول کاربران (سازگار با commercial API)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,7 +168,7 @@ def init_database():
             )
         ''')
         
-        # 🔧 جدول آمار API calls (سازگار با commercial API)
+        # جدول آمار API calls (سازگار با commercial API)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS api_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,7 +225,6 @@ def init_database():
 def get_db():
     """دریافت connection به database"""
     if 'db' not in g:
-        # 🔧 تغییر نام database
         db_path = os.path.join(USERS_PATH, 'users.db')
         g.db = sqlite3.connect(db_path)
         g.db.row_factory = sqlite3.Row
@@ -339,25 +333,27 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- API Integration ---
+# --- API Integration (🔧 اصلاح شده) ---
 def call_prediction_api(payload, username, password):
-    """فراخوانی API پیش‌بینی (سازگار با commercial API)"""
+    """فراخوانی API پیش‌بینی (سازگار با commercial API) - اصلاح شده"""
     try:
         # 🔧 استفاده از Basic Auth برای commercial API
         response = requests.post(
             f"{API_URL}/predict",
             json=payload,
-            auth=(username, password),  # Basic Auth
+            auth=(username, password),  # Basic Auth با اطلاعات درست
             timeout=10
         )
         
         if response.status_code == 200:
             return response.json(), None
         elif response.status_code == 401:
+            logging.error(f"Authentication failed for user: {username}")
             return None, "خطا در احراز هویت API"
         elif response.status_code == 429:
             return None, "محدودیت تعداد درخواست به API"
         else:
+            logging.error(f"API error: {response.status_code} - {response.text[:200]}")
             return None, f"خطا در API: {response.status_code}"
             
     except requests.exceptions.RequestException as e:
@@ -434,7 +430,7 @@ def send_payment_notification_to_admin(payment_id, user_id, amount, currency, pa
     except Exception as e:
         logging.error(f"Error sending payment notification: {e}")
 
-# --- HTML Templates (Embedded) ---
+# --- HTML Templates (بدون تغییر) ---
 
 LOGIN_TEMPLATE = '''
 <!DOCTYPE html>
@@ -734,6 +730,9 @@ DASHBOARD_TEMPLATE = '''
                         <div class="alert alert-info">
                             <small><strong>جدید!</strong> مدل AI ما با دقت 92% بهبود یافت.</small>
                         </div>
+                        <div class="alert alert-success">
+                            <small><strong>v1.2</strong> مشکل authentication برطرف شد.</small>
+                        </div>
                         <div class="alert alert-warning">
                             <small>برای دسترسی به تمام ویژگی‌ها اشتراک خود را ارتقا دهید.</small>
                         </div>
@@ -839,7 +838,7 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """صفحه ورود"""
+    """صفحه ورود - اصلاح شده برای password caching"""
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -849,6 +848,11 @@ def login():
             session['user_id'] = user['id']
             session['username'] = user['username']
             session['subscription_plan'] = user['subscription_plan']
+            
+            # 🔧 ذخیره موقت password برای API calls
+            session_id = session.get('_id', secrets.token_hex(16))
+            session['_id'] = session_id
+            session_passwords[session_id] = password  # Cache password موقت
             
             flash('با موفقیت وارد شدید!', 'success')
             return redirect(url_for('dashboard'))
@@ -913,15 +917,23 @@ def dashboard():
 @app.route('/api/get-signal', methods=['POST'])
 @login_required
 def api_get_signal():
-    """API برای دریافت سیگنال از داشبورد (بهبود یافته)"""
+    """API برای دریافت سیگنال از داشبورد (🔧 اصلاح شده)"""
     try:
         data = request.get_json()
         payload = data['payload']
         symbol = data['symbol']
         timeframe = data['timeframe']
         
-        # 🔧 فراخوانی API پیش‌بینی با Basic Auth
-        result, error = call_prediction_api(payload, session['username'], 'temp_password')
+        # 🔧 دریافت password از cache
+        session_id = session.get('_id')
+        if not session_id or session_id not in session_passwords:
+            return jsonify({'success': False, 'error': 'Authentication session expired. Please login again.'})
+        
+        username = session['username']
+        password = session_passwords[session_id]
+        
+        # 🔧 فراخوانی API پیش‌بینی با اطلاعات درست
+        result, error = call_prediction_api(payload, username, password)
         
         if result:
             # ذخیره سیگنال در دیتابیس
@@ -937,8 +949,10 @@ def api_get_signal():
             
             db.commit()
             
+            logging.info(f"✅ Signal generated for user {username}: {symbol} {timeframe} = {result['signal']}")
             return jsonify({'success': True, 'result': result})
         else:
+            logging.error(f"❌ Signal generation failed for user {username}: {error}")
             return jsonify({'success': False, 'error': error or 'خطا در دریافت سیگنال'})
             
     except Exception as e:
@@ -969,7 +983,12 @@ def profile():
 
 @app.route('/logout')
 def logout():
-    """خروج کاربر"""
+    """خروج کاربر - اصلاح شده برای پاک‌سازی password cache"""
+    # 🔧 پاک‌سازی password از cache
+    session_id = session.get('_id')
+    if session_id and session_id in session_passwords:
+        del session_passwords[session_id]
+    
     session.clear()
     flash('با موفقیت خارج شدید', 'success')
     return redirect(url_for('login'))
@@ -983,11 +1002,12 @@ def admin_dashboard():
     return redirect(url_for('dashboard'))
 
 if __name__ == '__main__':
-    print(f"🚀 Starting Simple Commercial System v1.1")
+    print(f"🚀 Starting Simple Commercial System v1.2 (Fixed Authentication)")
     print(f"💼 Site Name: {SITE_NAME}")
     print(f"🌐 Web Interface: http://{WEB_HOST}:{WEB_PORT}")
     print(f"👥 Max Users: {MAX_USERS}")
     print(f"🔗 Prediction API: {API_URL}")
+    print(f"🔧 Authentication: Enhanced (Fixed)")
     
     # Initialize database
     if init_database():
