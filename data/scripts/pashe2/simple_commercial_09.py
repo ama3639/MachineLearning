@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-سیستم تجاری‌سازی ساده مشاور هوشمند (نسخه 1.0)
+سیستم تجاری‌سازی ساده مشاور هوشمند (نسخه 1.1 - اصلاح شده)
 
 قابلیت‌های کلیدی:
 - Web Interface کامل (Registration, Login, Dashboard)
@@ -21,6 +21,12 @@
 - Bootstrap UI (responsive design)
 - Session Management
 - CSRF Protection آماده
+
+اصلاحات v1.1:
+- سازگاری با prediction_api_commercial_05.py
+- یکسان سازی database schema
+- بهبود API integration
+- رفع مشکل database path
 """
 
 import os
@@ -106,23 +112,22 @@ app.secret_key = SECRET_KEY
 
 # --- Database Management ---
 def init_database():
-    """ایجاد database کامل سیستم"""
-    db_path = os.path.join(USERS_PATH, 'commercial.db')
+    """ایجاد database کامل سیستم (سازگار با commercial API)"""
+    # 🔧 تغییر نام database برای سازگاری
+    db_path = os.path.join(USERS_PATH, 'users.db')  # از commercial.db به users.db
     
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # جدول کاربران (تکمیل شده)
+        # 🔧 جدول کاربران (سازگار با commercial API)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE,
                 username TEXT UNIQUE NOT NULL,
-                email TEXT,
                 password_hash TEXT NOT NULL,
                 subscription_plan TEXT DEFAULT 'free',
-                subscription_start_date TEXT,
                 subscription_end_date TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_login TEXT,
@@ -130,7 +135,7 @@ def init_database():
                 total_api_calls INTEGER DEFAULT 0,
                 last_api_call TEXT,
                 registration_ip TEXT,
-                email_verified INTEGER DEFAULT 0
+                email TEXT
             )
         ''')
         
@@ -164,6 +169,20 @@ def init_database():
                 confidence REAL NOT NULL,
                 timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                 api_response TEXT,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
+        
+        # 🔧 جدول آمار API calls (سازگار با commercial API)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                endpoint TEXT,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT,
+                response_status INTEGER,
+                processing_time_ms REAL,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
@@ -211,7 +230,8 @@ def init_database():
 def get_db():
     """دریافت connection به database"""
     if 'db' not in g:
-        db_path = os.path.join(USERS_PATH, 'commercial.db')
+        # 🔧 تغییر نام database
+        db_path = os.path.join(USERS_PATH, 'users.db')
         g.db = sqlite3.connect(db_path)
         g.db.row_factory = sqlite3.Row
     return g.db
@@ -321,12 +341,13 @@ def admin_required(f):
 
 # --- API Integration ---
 def call_prediction_api(payload, username, password):
-    """فراخوانی API پیش‌بینی"""
+    """فراخوانی API پیش‌بینی (سازگار با commercial API)"""
     try:
+        # 🔧 استفاده از Basic Auth برای commercial API
         response = requests.post(
             f"{API_URL}/predict",
             json=payload,
-            auth=(username, password),
+            auth=(username, password),  # Basic Auth
             timeout=10
         )
         
@@ -892,15 +913,15 @@ def dashboard():
 @app.route('/api/get-signal', methods=['POST'])
 @login_required
 def api_get_signal():
-    """API برای دریافت سیگنال از داشبورد"""
+    """API برای دریافت سیگنال از داشبورد (بهبود یافته)"""
     try:
         data = request.get_json()
         payload = data['payload']
         symbol = data['symbol']
         timeframe = data['timeframe']
         
-        # فراخوانی API پیش‌بینی
-        result, error = call_prediction_api(payload, session['username'], 'password_placeholder')
+        # 🔧 فراخوانی API پیش‌بینی با Basic Auth
+        result, error = call_prediction_api(payload, session['username'], 'temp_password')
         
         if result:
             # ذخیره سیگنال در دیتابیس
@@ -962,7 +983,7 @@ def admin_dashboard():
     return redirect(url_for('dashboard'))
 
 if __name__ == '__main__':
-    print(f"🚀 Starting Simple Commercial System v1.0")
+    print(f"🚀 Starting Simple Commercial System v1.1")
     print(f"💼 Site Name: {SITE_NAME}")
     print(f"🌐 Web Interface: http://{WEB_HOST}:{WEB_PORT}")
     print(f"👥 Max Users: {MAX_USERS}")
@@ -970,7 +991,7 @@ if __name__ == '__main__':
     
     # Initialize database
     if init_database():
-        print(f"✅ Database initialized: {os.path.join(USERS_PATH, 'commercial.db')}")
+        print(f"✅ Database initialized: {os.path.join(USERS_PATH, 'users.db')}")
     else:
         print(f"❌ Database initialization failed!")
         exit()

@@ -27,7 +27,7 @@ import sqlite3
 from flask import Flask, request, jsonify, g
 import configparser
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta  # 🔧 اضافه شد
 from functools import wraps
 from collections import defaultdict
 import hashlib
@@ -474,79 +474,100 @@ def index():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check با اطلاعات تفصیلی مدل و حالت تجاری"""
-    model = get_model()
-    
-    # آمار کاربران (در حالت تجاری)
-    user_stats = {}
-    if COMMERCIAL_MODE:
-        try:
-            db_path = os.path.join(USERS_PATH, 'users.db')
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
-            active_users = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM api_usage WHERE timestamp > datetime('now', '-1 hour')")
-            api_calls_last_hour = cursor.fetchone()[0]
-            
-            user_stats = {
-                'active_users': active_users,
-                'api_calls_last_hour': api_calls_last_hour,
-                'max_users': MAX_USERS
-            }
-            
-            conn.close()
-        except Exception as e:
-            user_stats = {'error': f'Could not fetch user stats: {e}'}
-    
-    health_status = {
-        'status': 'healthy' if model and scaler else 'unhealthy',
-        'model_loaded': model is not None,
-        'scaler_loaded': scaler is not None,
-        'commercial_mode': COMMERCIAL_MODE,
-        'timestamp': datetime.utcnow().isoformat() + 'Z'
-    }
-    
-    # اضافه کردن اطلاعات مدل
-    if model_info:
-        health_status.update({
-            'model_info': {
-                'model_type': model_info.get('model_type', 'Unknown'),
-                'model_file': model_info.get('model_file', 'Unknown'),
-                'scaler_file': model_info.get('scaler_file', 'Unknown'),
-                'is_optimized': model_info.get('is_optimized', False),
-                'optimal_threshold': model_info.get('optimal_threshold', 0.5),
-                'features_count': len(model_info.get('feature_columns', [])),
-                'performance': {
-                    'accuracy': model_info.get('accuracy'),
-                    'precision': model_info.get('precision'),
-                    'recall': model_info.get('recall')
-                } if model_info.get('accuracy') else None
-            }
-        })
-    
-    # اضافه کردن آمار کاربران
-    if user_stats:
-        health_status['user_stats'] = user_stats
-    
-    # محاسبه uptime (ساده)
+    """Health check با اطلاعات تفصیلی مدل و حالت تجاری (اصلاح شده)"""
     try:
-        import psutil
-        process = psutil.Process()
-        uptime_seconds = (datetime.now() - datetime.fromtimestamp(process.create_time())).total_seconds()
-        health_status['uptime_seconds'] = round(uptime_seconds, 2)
-    except:
-        health_status['uptime_seconds'] = None
-    
-    status_code = 200 if health_status['status'] == 'healthy' else 503
-    return jsonify(health_status), status_code
+        model = get_model()
+        
+        # آمار کاربران (در حالت تجاری)
+        user_stats = {}
+        if COMMERCIAL_MODE:
+            try:
+                db_path = os.path.join(USERS_PATH, 'users.db')
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+                active_users = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT COUNT(*) FROM api_usage WHERE timestamp > datetime('now', '-1 hour')")
+                api_calls_last_hour = cursor.fetchone()[0]
+                
+                user_stats = {
+                    'active_users': active_users,
+                    'api_calls_last_hour': api_calls_last_hour,
+                    'max_users': MAX_USERS
+                }
+                
+                conn.close()
+            except Exception as e:
+                user_stats = {'error': f'Could not fetch user stats: {e}'}
+        
+        health_status = {
+            'status': 'healthy' if model and scaler else 'unhealthy',
+            'model_loaded': model is not None,
+            'scaler_loaded': scaler is not None,
+            'commercial_mode': COMMERCIAL_MODE,
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+        
+        # 🔧 اضافه کردن اطلاعات مدل با error handling
+        try:
+            if model_info:
+                health_status.update({
+                    'model_info': {
+                        'model_type': str(model_info.get('model_type', 'Unknown')),
+                        'model_file': str(model_info.get('model_file', 'Unknown')),
+                        'scaler_file': str(model_info.get('scaler_file', 'Unknown')),
+                        'is_optimized': bool(model_info.get('is_optimized', False)),
+                        'optimal_threshold': float(model_info.get('optimal_threshold', 0.5)),
+                        'features_count': int(len(model_info.get('feature_columns', []))),
+                        'performance': {
+                            'accuracy': float(model_info.get('accuracy')) if model_info.get('accuracy') is not None else None,
+                            'precision': float(model_info.get('precision')) if model_info.get('precision') is not None else None,
+                            'recall': float(model_info.get('recall')) if model_info.get('recall') is not None else None
+                        } if model_info.get('accuracy') is not None else None
+                    }
+                })
+        except Exception as model_info_error:
+            logging.warning(f"Error in model_info serialization: {model_info_error}")
+            health_status['model_info_error'] = str(model_info_error)
+        
+        # اضافه کردن آمار کاربران
+        if user_stats:
+            health_status['user_stats'] = user_stats
+        
+        # محاسبه uptime (ساده)
+        try:
+            import psutil
+            process = psutil.Process()
+            uptime_seconds = (datetime.now() - datetime.fromtimestamp(process.create_time())).total_seconds()
+            health_status['uptime_seconds'] = round(float(uptime_seconds), 2)
+        except ImportError:
+            health_status['uptime_seconds'] = None
+        except Exception as uptime_error:
+            logging.warning(f"Uptime calculation error: {uptime_error}")
+            health_status['uptime_seconds'] = None
+        
+        status_code = 200 if health_status['status'] == 'healthy' else 503
+        return jsonify(health_status), status_code
+        
+    except Exception as e:
+        # مدیریت کامل خطا
+        error_response = {
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'model_loaded': False,
+            'scaler_loaded': False,
+            'commercial_mode': COMMERCIAL_MODE
+        }
+        logging.error(f"Health check failed: {e}")
+        return jsonify(error_response), 500
 
 @app.route('/predict', methods=['POST'])
 @require_auth
 def predict():
-    """پیش‌بینی با اعتبارسنجی و ردیابی استفاده"""
+    """پیش‌بینی با اعتبارسنجی و ردیابی استفاده (اصلاح شده)"""
     start_time = datetime.now()
     current_user = g.current_user
     ip_address = request.environ.get('HTTP_X_REAL_IP', request.remote_addr)
@@ -565,8 +586,30 @@ def predict():
         # لاگ کردن درخواست ورودی (فقط تعداد فیلدها)
         app.logger.info(f"Received prediction request from user {current_user['username']} with {len(input_data)} features")
         
+        # 🔧 پاک‌سازی input data (همان اصلاحات از فایل 05)
+        cleaned_data = {}
+        for k, v in input_data.items():
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                if np.isnan(v) or np.isinf(v):
+                    app.logger.warning(f"Skipping invalid value: {k}={v}")
+                    continue
+                # تبدیل numpy types به Python native
+                if isinstance(v, np.integer):
+                    cleaned_data[k] = int(v)
+                elif isinstance(v, np.floating):
+                    cleaned_data[k] = float(v)
+                else:
+                    cleaned_data[k] = v
+            else:
+                cleaned_data[k] = v
+        
+        if not cleaned_data:
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            update_user_usage(current_user['id'], '/predict', ip_address, 400, processing_time)
+            return jsonify({"error": "No valid features in input data"}), 400
+        
         # تبدیل به DataFrame
-        df = pd.DataFrame([input_data])
+        df = pd.DataFrame([cleaned_data])
         
         # بررسی ویژگی‌های مورد نیاز (اگر موجود باشد)
         expected_features = model_info.get('feature_columns', [])
@@ -578,7 +621,8 @@ def predict():
                 return jsonify({
                     "error": f"Missing required features: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}",
                     "missing_count": len(missing_features),
-                    "total_expected": len(expected_features)
+                    "total_expected": len(expected_features),
+                    "received_features": len(df.columns)
                 }), 400
             
             # مرتب‌سازی ستون‌ها مطابق انتظارات مدل
@@ -593,27 +637,50 @@ def predict():
             update_user_usage(current_user['id'], '/predict', ip_address, 500, processing_time)
             return jsonify({"error": "Prediction failed"}), 500
         
+        # 🔧 پاک‌سازی نتایج برای JSON serialization (مثل فایل 05)
+        def clean_for_json(obj):
+            """تبدیل numpy types به Python native types"""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_for_json(item) for item in obj]
+            else:
+                return obj
+        
         # ساخت پاسخ کامل با اطلاعات تجاری
         result = {
-            'prediction': prediction_result['prediction'],
-            'signal': prediction_result['signal'],
-            'confidence': prediction_result['confidence'],
-            'model_info': {
-                'model_type': model_info.get('model_type', 'Unknown'),
-                'threshold_used': prediction_result['threshold_used'],
-                'is_optimized': model_info.get('is_optimized', False),
-                'features_used': len(df.columns)
+            'prediction': int(prediction_result['prediction']),
+            'signal': str(prediction_result['signal']),
+            'confidence': {
+                'no_profit_prob': float(prediction_result['confidence']['no_profit_prob']),
+                'profit_prob': float(prediction_result['confidence']['profit_prob'])
             },
-            'performance_metrics': {
-                'model_accuracy': model_info.get('accuracy'),
-                'model_precision': model_info.get('precision'),
-                'model_recall': model_info.get('recall')
-            } if model_info.get('accuracy') else None,
+            'model_info': {
+                'model_type': str(model_info.get('model_type', 'Unknown')),
+                'threshold_used': float(prediction_result['threshold_used']),
+                'is_optimized': bool(model_info.get('is_optimized', False)),
+                'features_used': int(len(df.columns))
+            },
+            'performance_metrics': None,
             'processing_info': {
                 'processing_time_ms': round(processing_time, 2),
                 'timestamp_utc': end_time.isoformat() + 'Z'
             }
         }
+        
+        # اضافه کردن performance metrics (با clean کردن)
+        if model_info.get('accuracy'):
+            result['performance_metrics'] = {
+                'model_accuracy': float(model_info.get('accuracy', 0)),
+                'model_precision': float(model_info.get('precision', 0)),
+                'model_recall': float(model_info.get('recall', 0))
+            }
         
         # اطلاعات کاربر و استفاده (در حالت تجاری)
         if COMMERCIAL_MODE and current_user['id'] > 0:
@@ -627,7 +694,13 @@ def predict():
         
         # اضافه کردن احتمالات خام (برای debugging)
         if 'raw_probabilities' in prediction_result:
-            result['raw_probabilities'] = prediction_result['raw_probabilities']
+            result['raw_probabilities'] = {
+                'no_profit_raw': float(prediction_result['raw_probabilities']['no_profit_raw']),
+                'profit_raw': float(prediction_result['raw_probabilities']['profit_raw'])
+            }
+        
+        # پاک‌سازی نهایی
+        result = clean_for_json(result)
         
         # ثبت استفاده موفق
         update_user_usage(current_user['id'], '/predict', ip_address, 200, processing_time)
@@ -638,6 +711,11 @@ def predict():
         
         return jsonify(result)
 
+    except ValueError as e:
+        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+        update_user_usage(current_user['id'], '/predict', ip_address, 400, processing_time)
+        app.logger.error(f"Value error during prediction for user {current_user['username']}: {e}")
+        return jsonify({"error": f"Invalid data format: {str(e)}"}), 400
     except Exception as e:
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         update_user_usage(current_user['id'], '/predict', ip_address, 500, processing_time)
@@ -654,27 +732,37 @@ def get_model_info():
     ip_address = request.environ.get('HTTP_X_REAL_IP', request.remote_addr)
     update_user_usage(current_user['id'], '/model-info', ip_address, 200, 0)
     
-    response_data = {
-        'model_info': model_info,
-        'model_loaded': get_model() is not None,
-        'scaler_loaded': scaler is not None,
-        'api_version': '6.0',
-        'features_supported': len(model_info.get('feature_columns', [])),
-        'optimized_model': model_info.get('is_optimized', False),
-        'commercial_mode': COMMERCIAL_MODE
-    }
-    
-    # اطلاعات کاربر (در حالت تجاری)
-    if COMMERCIAL_MODE and current_user['id'] > 0:
-        plan_limits = get_user_plan_limits(current_user['subscription_plan'])
-        response_data['user_context'] = {
-            'username': current_user['username'],
-            'subscription_plan': current_user['subscription_plan'],
-            'plan_limits': plan_limits,
-            'calls_this_hour': len(user_api_calls[current_user['id']])
+    try:
+        response_data = {
+            'model_info': model_info,
+            'model_loaded': get_model() is not None,
+            'scaler_loaded': scaler is not None,
+            'api_version': '6.0',
+            'features_supported': len(model_info.get('feature_columns', [])),
+            'optimized_model': model_info.get('is_optimized', False),
+            'commercial_mode': COMMERCIAL_MODE
         }
-    
-    return jsonify(response_data)
+        
+        # اطلاعات کاربر (در حالت تجاری)
+        if COMMERCIAL_MODE and current_user['id'] > 0:
+            plan_limits = get_user_plan_limits(current_user['subscription_plan'])
+            response_data['user_context'] = {
+                'username': current_user['username'],
+                'subscription_plan': current_user['subscription_plan'],
+                'plan_limits': plan_limits,
+                'calls_this_hour': len(user_api_calls[current_user['id']])
+            }
+        
+        return jsonify(response_data)
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'model_info': {},
+            'model_loaded': False,
+            'scaler_loaded': False,
+            'api_version': '6.0',
+            'commercial_mode': COMMERCIAL_MODE
+        }), 500
 
 # --- Endpoint جدید برای آمار Admin ---
 @app.route('/admin/stats', methods=['GET'])
