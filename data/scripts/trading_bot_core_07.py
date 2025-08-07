@@ -2,18 +2,22 @@
 # -*- coding: utf-8 -*-
 
 """
-اسکریپت هسته اصلی ربات مشاور هوشمند (نسخه 5.0 - با Risk Management)
-نسخه اصلاح شده: حل مشکل اتصال Binance API
+اسکریپت هسته اصلی ربات مشاور هوشمند (نسخه 5.1 - سازگار با API بهبود یافته)
+نسخه اصلاح شده: 
+- سازگاری با API جدید (Optimized Models)
+- نمایش Optimal Threshold در گزارش‌ها
+- بهبود اطلاعات Performance مدل
+- Enhanced Health Check
+- بهتر شدن اطلاعات Risk Management
 
-ویژگی‌های جدید:
-- افزودن Risk Management Module
-- Position Sizing با Kelly Criterion
+ویژگی‌های موجود:
+- Risk Management Module
+- Position Sizing با Kelly Criterion  
 - Dynamic Stop Loss و Take Profit بر اساس ATR
 - Max Drawdown Protection
 - Portfolio Heat Management
-- حل مشکل اتصال Binance API
-- اضافه کردن fallback به CryptoCompare
-- بهبود error handling و retry mechanism
+- Binance API Fallback
+- Multi-source Data
 """
 
 import os
@@ -46,6 +50,8 @@ try:
     API_HOST = config.get('API_Settings', 'host')
     API_PORT = config.getint('API_Settings', 'port')
     API_URL = f"http://{API_HOST}:{API_PORT}/predict"
+    API_HEALTH_URL = f"http://{API_HOST}:{API_PORT}/health"  # جدید
+    API_MODEL_INFO_URL = f"http://{API_HOST}:{API_PORT}/model-info"  # جدید
     
     CRYPTOCOMPARE_API_KEY = config.get('API_Keys', 'cryptocompare_api_key', fallback=None)
 
@@ -118,6 +124,9 @@ last_processed_timestamps = {}
 
 # Lock برای thread safety
 signals_lock = threading.Lock()
+
+# متغیر global برای اطلاعات مدل
+api_model_info = {}
 
 # --- بخش Risk Management جدید ---
 @dataclass
@@ -336,6 +345,50 @@ class RiskManager:
 # ایجاد instance از Risk Manager
 risk_manager = RiskManager()
 
+# === بخش جدید: API Health Check ===
+def check_api_health():
+    """بررسی سلامت API و دریافت اطلاعات مدل"""
+    global api_model_info
+    
+    try:
+        # Health check
+        health_response = requests.get(API_HEALTH_URL, timeout=5)
+        if health_response.status_code == 200:
+            health_data = health_response.json()
+            
+            if health_data.get('status') == 'healthy':
+                logging.info("✅ API Health Check: Healthy")
+                
+                # دریافت اطلاعات مدل
+                if 'model_info' in health_data:
+                    api_model_info = health_data['model_info']
+                    model_type = api_model_info.get('model_type', 'Unknown')
+                    threshold = api_model_info.get('optimal_threshold', 0.5)
+                    is_optimized = api_model_info.get('is_optimized', False)
+                    
+                    logging.info(f"🤖 Model Type: {model_type}")
+                    logging.info(f"🎯 Optimal Threshold: {threshold:.4f}")
+                    logging.info(f"⚡ Optimized Model: {'Yes' if is_optimized else 'No'}")
+                    
+                    # نمایش performance اگر موجود باشد
+                    performance = api_model_info.get('performance')
+                    if performance and performance.get('accuracy'):
+                        logging.info(f"📊 Model Performance: Accuracy={performance['accuracy']:.1%}, "
+                                   f"Precision={performance['precision']:.1%}, "
+                                   f"Recall={performance['recall']:.1%}")
+                
+                return True
+            else:
+                logging.error("❌ API Health Check: Unhealthy")
+                return False
+        else:
+            logging.error(f"❌ API Health Check failed: HTTP {health_response.status_code}")
+            return False
+            
+    except Exception as e:
+        logging.error(f"❌ API Health Check error: {e}")
+        return False
+
 # --- بخش ۳: توابع تلگرام (با افزودن گزارش ریسک) ---
 def send_telegram_message(message: str) -> bool:
     """ارسال پیام به تلگرام"""
@@ -370,13 +423,18 @@ def send_telegram_message(message: str) -> bool:
 
 def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence: float, 
                           exchange: str, position_size: float = None, stop_loss: float = None, 
-                          take_profit: float = None) -> str:
-    """فرمت‌دهی پیام برای تلگرام با اطلاعات ریسک"""
+                          take_profit: float = None, threshold_used: float = None) -> str:
+    """فرمت‌دهی پیام برای تلگرام با اطلاعات مدل بهبود یافته"""
     emoji_signal = "🟢" if signal == "PROFIT" else "🔴"
     emoji_confidence = "🔥" if confidence >= 0.8 else "✅" if confidence >= 0.7 else "⚡"
     
+    # اطلاعات مدل
+    model_type = api_model_info.get('model_type', 'Unknown')
+    is_optimized = api_model_info.get('is_optimized', False)
+    model_accuracy = api_model_info.get('performance', {}).get('accuracy')
+    
     message = f"""
-{emoji_signal} <b>سیگنال جدید از ربات مشاور هوشمند</b> {emoji_signal}
+{emoji_signal} <b>سیگنال جدید از ربات مشاور هوشمند v5.1</b> {emoji_signal}
 
 📊 <b>نماد:</b> {symbol}
 ⏱ <b>تایم فریم:</b> {timeframe}
@@ -385,6 +443,17 @@ def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence
 {emoji_confidence} <b>اطمینان:</b> {confidence:.1%}
 🎯 <b>آستانه:</b> {CONFIDENCE_THRESHOLD:.0%}
 """
+
+    # اطلاعات مدل بهبود یافته
+    if threshold_used:
+        threshold_emoji = "⚡" if is_optimized else "🔧"
+        message += f"""
+🤖 <b>مدل:</b> {model_type[:20]}{'...' if len(model_type) > 20 else ''}
+{threshold_emoji} <b>Threshold:</b> {threshold_used:.3f} {'(Optimized)' if is_optimized else '(Default)'}
+"""
+    
+    if model_accuracy:
+        message += f"📊 <b>دقت مدل:</b> {model_accuracy:.1%}\n"
     
     # افزودن اطلاعات Risk Management
     if position_size is not None:
@@ -399,7 +468,7 @@ def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence
     message += f"""
 🕐 <b>زمان:</b> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-#SmartAdvisor #CryptoSignal #{symbol.replace('/', '')} #{timeframe}
+#SmartAdvisor #CryptoSignal #{symbol.replace('/', '')} #{timeframe} #v5_1
 """
     return message
 
@@ -407,7 +476,23 @@ def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence
 def load_model_features() -> Optional[List[str]]:
     """بارگذاری لیست ویژگی‌های ذخیره شده توسط مدل"""
     try:
-        list_of_files = glob.glob(os.path.join(MODELS_PATH, 'feature_names_*.txt'))
+        # سعی در دریافت از API
+        try:
+            response = requests.get(API_MODEL_INFO_URL, timeout=5)
+            if response.status_code == 200:
+                model_info = response.json()
+                feature_columns = model_info.get('model_info', {}).get('feature_columns', [])
+                if feature_columns:
+                    logging.info(f"✅ Model features from API: {len(feature_columns)} features")
+                    return feature_columns
+        except:
+            logging.warning("Could not get features from API, trying local files...")
+        
+        # جستجو در فایل‌های محلی
+        list_of_files = glob.glob(os.path.join(MODELS_PATH, 'feature_names_optimized_*.txt'))
+        if not list_of_files:
+            list_of_files = glob.glob(os.path.join(MODELS_PATH, 'feature_names_*.txt'))
+        
         if not list_of_files:
             # جستجو در پوشه‌های run_*
             list_of_files = glob.glob(os.path.join(MODELS_PATH, 'run_*/feature_names_*.txt'))
@@ -692,7 +777,7 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         return None
 
 def get_prediction(payload: Dict) -> Optional[Dict]:
-    """ارسال درخواست به API پیش‌بینی"""
+    """ارسال درخواست به API پیش‌بینی بهبود یافته"""
     try:
         # حذف ATR از payload قبل از ارسال به API
         atr_value = payload.pop('_atr_value', None)
@@ -705,7 +790,15 @@ def get_prediction(payload: Dict) -> Optional[Dict]:
         if atr_value:
             result['atr'] = atr_value
             
+        # لاگ اطلاعات تفصیلی‌تر
+        if 'model_info' in result:
+            model_info = result['model_info']
+            logging.info(f"🤖 Model: {model_info.get('model_type', 'Unknown')}")
+            logging.info(f"🎯 Threshold Used: {model_info.get('threshold_used', 0.5):.4f}")
+            logging.info(f"⚡ Optimized: {'Yes' if model_info.get('is_optimized') else 'No'}")
+            
         return result
+        
     except requests.exceptions.RequestException as e:
         logging.error(f"خطا در برقراری ارتباط با API: {e}")
         return None
@@ -730,8 +823,9 @@ def save_performance_metrics():
     except Exception as e:
         logging.error(f"خطا در ذخیره معیارهای عملکرد: {e}")
 
-def send_notification(symbol, timeframe, signal, confidence, current_price, atr):
-    """ارسال اعلان به کنسول و تلگرام و ذخیره سیگنال با اطلاعات Risk Management"""
+def send_notification(symbol, timeframe, signal, confidence, current_price, atr, 
+                     prediction_result=None):
+    """ارسال اعلان به کنسول و تلگرام و ذخیره سیگنال با اطلاعات بهبود یافته"""
     
     # محاسبات Risk Management
     position_size = risk_manager.calculate_position_size(symbol, confidence, current_price, atr)
@@ -743,6 +837,11 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr)
     stop_loss = risk_manager.calculate_stop_loss(current_price, atr, signal)
     take_profit = risk_manager.calculate_take_profit(current_price, atr, signal)
     
+    # استخراج threshold از prediction result
+    threshold_used = None
+    if prediction_result and 'model_info' in prediction_result:
+        threshold_used = prediction_result['model_info'].get('threshold_used', 0.5)
+    
     signal_data = {
         "timestamp": datetime.datetime.now().isoformat(),
         "symbol": symbol,
@@ -751,12 +850,16 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr)
         "signal": signal,
         "confidence": confidence,
         "threshold": CONFIDENCE_THRESHOLD,
+        "threshold_used": threshold_used,
         "current_price": current_price,
         "position_size": position_size,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "atr": atr,
-        "portfolio_heat": risk_manager.portfolio_heat
+        "portfolio_heat": risk_manager.portfolio_heat,
+        # اطلاعات مدل
+        "model_type": api_model_info.get('model_type', 'Unknown'),
+        "is_optimized": api_model_info.get('is_optimized', False)
     }
     
     # ذخیره سیگنال
@@ -775,17 +878,24 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr)
     )
     risk_manager.positions[symbol] = position
     
-    # نمایش در کنسول
+    # نمایش در کنسول با اطلاعات بهبود یافته
+    threshold_info = f"({threshold_used:.4f})" if threshold_used else f"({CONFIDENCE_THRESHOLD:.2%})"
+    model_info_text = f"Model: {api_model_info.get('model_type', 'Unknown')[:20]}"
+    
     console_message = f"""
     ================================================
-    !!!      سیگنال جدید از مشاور هوشمند      !!!
+    !!!    سیگنال جدید از مشاور هوشمند v5.1    !!!
     ================================================
     نماد:         {symbol}
     تایم فریم:     {timeframe}
     صرافی:        {EXCHANGE_TO_USE.upper()}
     سیگنال:       {signal.upper()}
     اطمینان:      {confidence:.2%}
-    آستانه:       {CONFIDENCE_THRESHOLD:.2%}
+    آستانه:       {threshold_info}
+    
+    🤖 اطلاعات مدل:
+    {model_info_text}
+    Optimized:    {'Yes' if api_model_info.get('is_optimized') else 'No'}
     
     💼 مدیریت ریسک:
     قیمت فعلی:    ${current_price:.2f}
@@ -805,18 +915,23 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr)
     if TELEGRAM_ENABLED:
         telegram_message = format_telegram_message(
             symbol, timeframe, signal, confidence, EXCHANGE_TO_USE,
-            position_size, stop_loss, take_profit
+            position_size, stop_loss, take_profit, threshold_used
         )
         send_telegram_message(telegram_message)
 
 def send_startup_message():
-    """ارسال پیام شروع به کار ربات"""
+    """ارسال پیام شروع به کار ربات بهبود یافته"""
     mode = "چند جفت ارز" if MULTI_PAIR_ENABLED else "تک جفت ارز"
     pairs_text = ", ".join(PAIRS_TO_MONITOR)
     timeframes_text = ", ".join(TIMEFRAMES_TO_MONITOR)
     
+    # اطلاعات مدل
+    model_type = api_model_info.get('model_type', 'Unknown')
+    threshold = api_model_info.get('optimal_threshold', 'Unknown')
+    is_optimized = api_model_info.get('is_optimized', False)
+    
     startup_message = f"""
-🚀 <b>ربات مشاور هوشمند فعال شد!</b>
+🚀 <b>ربات مشاور هوشمند v5.1 فعال شد!</b>
 
 📊 <b>تنظیمات:</b>
 • حالت: {mode}
@@ -825,6 +940,12 @@ def send_startup_message():
 • تایم فریم‌ها: {timeframes_text}
 • آستانه اطمینان: {CONFIDENCE_THRESHOLD:.0%}
 • بازه زمانی بررسی: {POLL_INTERVAL_SECONDS} ثانیه
+
+🤖 <b>اطلاعات مدل:</b>
+• نوع مدل: {model_type}
+• Threshold: {threshold}
+• Optimized: {'✅' if is_optimized else '❌'}
+• API Status: {'✅ Connected' if api_model_info else '❌ Disconnected'}
 
 💼 <b>مدیریت ریسک:</b>
 • حداکثر اندازه پوزیشن: {MAX_POSITION_SIZE:.0%}
@@ -836,21 +957,22 @@ def send_startup_message():
 ⚡ ربات آماده دریافت و تحلیل داده‌ها است...
 🔄 Fallback to CryptoCompare در صورت مشکل Binance
 
-#BotStarted #{datetime.datetime.now().strftime('%Y%m%d')}
+#BotStarted #{datetime.datetime.now().strftime('%Y%m%d')} #v5_1
 """
     
     if TELEGRAM_ENABLED:
         send_telegram_message(startup_message)
 
 def process_pair(symbol: str, timeframe: str, expected_features: Optional[List[str]] = None) -> Dict:
-    """پردازش یک جفت ارز و تایم‌فریم مشخص"""
+    """پردازش یک جفت ارز و تایم‌فریم مشخص با اطلاعات بهبود یافته"""
     result = {
         'symbol': symbol,
         'timeframe': timeframe,
         'success': False,
         'signal': None,
         'confidence': None,
-        'error': None
+        'error': None,
+        'threshold_used': None
     }
     
     try:
@@ -898,16 +1020,21 @@ def process_pair(symbol: str, timeframe: str, expected_features: Optional[List[s
         if prediction_result:
             signal = prediction_result.get('signal')
             profit_prob = prediction_result.get('confidence', {}).get('profit_prob', 0)
+            threshold_used = prediction_result.get('model_info', {}).get('threshold_used', 0.5)
             
             result['success'] = True
             result['signal'] = signal
             result['confidence'] = profit_prob
+            result['threshold_used'] = threshold_used
             
-            logging.info(f"📈 Prediction for {symbol} {timeframe}: Signal={signal}, Confidence={profit_prob:.2%}")
+            logging.info(f"📈 Prediction for {symbol} {timeframe}: "
+                        f"Signal={signal}, Confidence={profit_prob:.2%}, "
+                        f"Threshold={threshold_used:.4f}")
             
             # بررسی آستانه و ارسال اعلان
             if signal == 'PROFIT' and profit_prob >= CONFIDENCE_THRESHOLD:
-                send_notification(symbol, timeframe, signal, profit_prob, current_price, atr)
+                send_notification(symbol, timeframe, signal, profit_prob, current_price, atr, 
+                                prediction_result)
         else:
             result['error'] = "Failed to get prediction from API"
         
@@ -920,9 +1047,9 @@ def process_pair(symbol: str, timeframe: str, expected_features: Optional[List[s
     return result
 
 def multi_pair_loop(expected_features: Optional[List[str]] = None):
-    """حلقه اصلی برای پردازش چند جفت ارز"""
+    """حلقه اصلی برای پردازش چند جفت ارز بهبود یافته"""
     logging.info("="*70)
-    logging.info("🤖 Smart Advisor Bot v5.0 Started (Multi-Pair Mode with Risk Management)")
+    logging.info("🤖 Smart Advisor Bot v5.1 Started (Enhanced API Integration)")
     logging.info(f"📊 Exchange: {EXCHANGE_TO_USE.upper()}")
     logging.info(f"💱 Symbols: {', '.join(PAIRS_TO_MONITOR)}")
     logging.info(f"⏱️ Timeframes: {', '.join(TIMEFRAMES_TO_MONITOR)}")
@@ -932,6 +1059,12 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
     logging.info(f"📱 Telegram: {'Enabled' if TELEGRAM_ENABLED else 'Disabled'}")
     logging.info(f"💼 Risk Management: Enabled")
     logging.info("="*70)
+    
+    # بررسی سلامت API و دریافت اطلاعات مدل
+    if not check_api_health():
+        logging.error("❌ API Health Check failed! Bot will continue but may not work properly.")
+        print("❌ WARNING: API is not healthy! Check if prediction_api_05.py is running.")
+        input("Press Enter to continue anyway or Ctrl+C to exit...")
     
     # ارسال پیام شروع به کار
     send_startup_message()
@@ -973,6 +1106,9 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
                         result = future.result()
                         if result['success']:
                             successful_predictions += 1
+                            # لاگ threshold برای successful predictions
+                            if result.get('threshold_used'):
+                                logging.debug(f"✅ {symbol} {timeframe}: Threshold {result['threshold_used']:.4f}")
                         else:
                             if result['error'] not in ["Same candle as before"]:
                                 failed_attempts += 1
@@ -980,7 +1116,7 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
                         logging.error(f"Thread error for {symbol} {timeframe}: {e}")
                         failed_attempts += 1
             
-            # گزارش وضعیت دوره‌ای
+            # گزارش وضعیت دوره‌ای با اطلاعات مدل
             if iteration_count % 10 == 0:
                 total_attempts = successful_predictions + failed_attempts
                 success_rate = (successful_predictions / total_attempts * 100) if total_attempts > 0 else 0
@@ -988,14 +1124,26 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
                 # دریافت گزارش ریسک
                 risk_report = risk_manager.get_risk_report()
                 
+                # اطلاعات مدل
+                model_info_text = ""
+                if api_model_info:
+                    model_info_text = f"""
+🤖 <b>اطلاعات مدل:</b>
+• نوع: {api_model_info.get('model_type', 'Unknown')[:25]}
+• Threshold: {api_model_info.get('optimal_threshold', 0.5):.4f}
+• Optimized: {'✅' if api_model_info.get('is_optimized') else '❌'}
+"""
+                
                 status_message = f"""
-📊 <b>گزارش وضعیت دوره‌ای</b>
+📊 <b>گزارش وضعیت دوره‌ای v5.1</b>
 
 • تعداد بررسی‌ها: {iteration_count}
 • پیش‌بینی‌های موفق: {successful_predictions}
 • خطاها: {failed_attempts}
 • نرخ موفقیت: {success_rate:.1f}%
 • سیگنال‌های صادر شده: {len(signals_history)}
+
+{model_info_text}
 
 {risk_report}
 
@@ -1007,6 +1155,11 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
                 logging.info(f"   - Failed Attempts: {failed_attempts}")
                 logging.info(f"   - Success Rate: {success_rate:.1f}%")
                 logging.info(f"   - Total Signals Generated: {len(signals_history)}")
+                
+                if api_model_info:
+                    logging.info(f"   - Model: {api_model_info.get('model_type', 'Unknown')}")
+                    logging.info(f"   - Threshold: {api_model_info.get('optimal_threshold', 0.5):.4f}")
+                
                 save_performance_metrics()
                 
                 # ارسال گزارش دوره‌ای به تلگرام
@@ -1023,14 +1176,14 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
             # ارسال پیام خطا به تلگرام در صورت خطاهای مکرر
             if failed_attempts % 5 == 0 and TELEGRAM_ENABLED:
                 error_message = f"""
-⚠️ <b>هشدار خطا</b>
+⚠️ <b>هشدار خطا v5.1</b>
 
 ربات با خطاهای مکرر مواجه شده است.
 تعداد خطاها: {failed_attempts}
 آخرین خطا: {str(e)[:100]}...
 
 🔄 سیستم fallback فعال است.
-لطفاً وضعیت شبکه را بررسی کنید.
+لطفاً وضعیت API و شبکه را بررسی کنید.
 """
                 send_telegram_message(error_message)
             
@@ -1046,18 +1199,21 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
         final_risk_report = risk_manager.get_risk_report()
         
         shutdown_message = f"""
-🛑 <b>ربات مشاور هوشمند متوقف شد</b>
+🛑 <b>ربات مشاور هوشمند v5.1 متوقف شد</b>
 
 📊 <b>آمار نهایی:</b>
 • تعداد کل بررسی‌ها: {iteration_count}
 • سیگنال‌های صادر شده: {len(signals_history)}
 • نرخ موفقیت: {(successful_predictions / total_attempts * 100) if total_attempts > 0 else 0:.1f}%
 
+🤖 <b>مدل استفاده شده:</b>
+{api_model_info.get('model_type', 'Unknown')} {'(Optimized)' if api_model_info.get('is_optimized') else ''}
+
 {final_risk_report}
 
 🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-#BotStopped
+#BotStopped #v5_1
 """
         send_telegram_message(shutdown_message)
     
@@ -1071,10 +1227,11 @@ def single_pair_loop(expected_features: Optional[List[str]] = None):
 # --- نقطه شروع اسکریپت ---
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("🤖 Smart Advisor Bot v5.0")
+    print("🤖 Smart Advisor Bot v5.1")
     print("📊 Multi-Pair & Multi-Timeframe Support")
     print("💼 Risk Management Module Enabled")
     print("🔄 Binance API Fallback System")
+    print("⚡ Enhanced API Integration (Optimized Models)")
     print("="*60)
     
     # نمایش تنظیمات
@@ -1104,6 +1261,18 @@ if __name__ == "__main__":
     else:
         print("\nℹ️ Telegram notifications: DISABLED")
     
+    # بررسی سلامت API
+    print(f"\n🔍 Checking API health at {API_HEALTH_URL}...")
+    if check_api_health():
+        print("✅ API Health Check: Passed")
+        if api_model_info:
+            print(f"🤖 Model Type: {api_model_info.get('model_type', 'Unknown')}")
+            print(f"🎯 Optimal Threshold: {api_model_info.get('optimal_threshold', 0.5):.4f}")
+            print(f"⚡ Optimized Model: {'Yes' if api_model_info.get('is_optimized') else 'No'}")
+    else:
+        print("❌ API Health Check: Failed")
+        print("⚠️  Make sure prediction_api_05.py is running!")
+    
     # بارگذاری لیست ویژگی‌های مدل
     model_features = load_model_features()
     
@@ -1112,7 +1281,10 @@ if __name__ == "__main__":
     else:
         print("\n⚠️ Running without feature consistency check")
     
-    print("\n⚠️ Please ensure the prediction API (05_prediction_api.py) is running!")
+    print(f"\n📡 API Endpoints:")
+    print(f"   - Prediction: {API_URL}")
+    print(f"   - Health Check: {API_HEALTH_URL}")
+    print(f"   - Model Info: {API_MODEL_INFO_URL}")
     print("🔄 Fallback system: CryptoCompare API available if Binance fails")
     print("📊 Connection timeout: 30 seconds")
     print("🔄 Retry mechanism: 3 attempts per request")
