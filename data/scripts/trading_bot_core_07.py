@@ -37,6 +37,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from collections import defaultdict
+import signal
+import sys
 
 # --- بخش ۱: خواندن پیکربندی و تنظیمات ---
 config = configparser.ConfigParser()
@@ -127,6 +129,11 @@ signals_lock = threading.Lock()
 
 # متغیر global برای اطلاعات مدل
 api_model_info = {}
+
+# متغیرهای global برای tracking
+successful_predictions = 0
+failed_attempts = 0
+iteration_count = 0
 
 # --- بخش Risk Management جدید ---
 @dataclass
@@ -344,6 +351,52 @@ class RiskManager:
 
 # ایجاد instance از Risk Manager
 risk_manager = RiskManager()
+
+# === توابع cleanup برای تلگرام ===
+def cleanup_and_shutdown():
+    """تابع cleanup برای ارسال پیام قطع ارتباط و ذخیره آمار"""
+    global successful_predictions, failed_attempts, iteration_count
+    
+    try:
+        # ذخیره نهایی قبل از خروج
+        save_performance_metrics()
+        risk_manager.save_risk_metrics()
+        
+        # ارسال پیام خاموش شدن
+        if TELEGRAM_ENABLED:
+            total_attempts = successful_predictions + failed_attempts
+            final_risk_report = risk_manager.get_risk_report()
+            
+            shutdown_message = f"""
+🛑 <b>ربات مشاور هوشمند v5.1 متوقف شد</b>
+
+📊 <b>آمار نهایی:</b>
+• تعداد کل بررسی‌ها: {iteration_count}
+• سیگنال‌های صادر شده: {len(signals_history)}
+• نرخ موفقیت: {(successful_predictions / total_attempts * 100) if total_attempts > 0 else 0:.1f}%
+
+🤖 <b>مدل استفاده شده:</b>
+{api_model_info.get('model_type', 'Unknown')} {'(Optimized)' if api_model_info.get('is_optimized') else ''}
+
+{final_risk_report}
+
+🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+#BotStopped #v5_1
+"""
+            send_telegram_message(shutdown_message)
+            logging.info("📱 Shutdown message sent to Telegram")
+        
+        logging.info("\n👋 Bot shutdown complete")
+    except Exception as e:
+        logging.error(f"Error during cleanup: {e}")
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    logging.info("\n⛔ Received shutdown signal (Ctrl+C)")
+    print("\n⛔ Shutting down gracefully...")
+    cleanup_and_shutdown()
+    sys.exit(0)
 
 # === بخش جدید: API Health Check ===
 # === بخش جدید: API Health Check بهبود یافته ===
@@ -758,9 +811,15 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         group['obv'] = ta.obv(group['close'], group['volume'])
         group['obv_change'] = group['obv'].pct_change()
         
-        # 🔧 اصلاح MFI calculation با error handling
+        # 🔧 اصلاح کامل MFI calculation
         try:
-            group['mfi'] = ta.mfi(group['high'], group['low'], group['close'], group['volume'], length=14)
+            # تبدیل صریح انواع داده برای MFI
+            high_values = group['high'].astype('float64')
+            low_values = group['low'].astype('float64') 
+            close_values = group['close'].astype('float64')
+            volume_values = group['volume'].astype('float64')
+            
+            group['mfi'] = ta.mfi(high_values, low_values, close_values, volume_values, length=14)
         except Exception as mfi_error:
             logging.warning(f"MFI calculation failed: {mfi_error}. Using default value.")
             group['mfi'] = 50.0  # مقدار پیش‌فرض
@@ -839,7 +898,7 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         # ذخیره مقدار ATR برای محاسبات Risk Management
         latest_atr = group['atr'].iloc[-1]
         
-        # 🔧 فیلتر کردن NaN ها و مقادیر inf (اصلاح شده)
+        # 🔧 فیلتر کردن NaN ها و مقادیر inf (اصلاح نهایی)
         features_for_api = {}
         for k, v in latest_features.items():
             try:
@@ -876,12 +935,12 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         # حذف timestamp
         features_for_api.pop('timestamp', None)
         
-        # 🔧 بررسی مقادیر معقول (حذف outliers)
+        # 🔧 بررسی مقادیر معقول (اصلاح شده - حفظ مقدار 0)
         cleaned_features = {}
         for k, v in features_for_api.items():
             if isinstance(v, (int, float)):
-                # حذف مقادیر خیلی بزرگ یا خیلی کوچک
-                if abs(v) < 1e10 and abs(v) > 1e-10:
+                # فقط حذف مقادیر خیلی بزرگ (حفظ 0 و مقادیر کوچک)
+                if abs(v) < 1e10:  # 🔧 حذف شرط > 1e-10 برای حفظ 0
                     cleaned_features[k] = v
                 else:
                     logging.warning(f"Outlier value removed: {k}={v}")
@@ -1239,6 +1298,11 @@ def process_pair(symbol: str, timeframe: str, expected_features: Optional[List[s
 
 def multi_pair_loop(expected_features: Optional[List[str]] = None):
     """حلقه اصلی برای پردازش چند جفت ارز بهبود یافته"""
+    global successful_predictions, failed_attempts, iteration_count
+    
+    # ثبت signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+    
     logging.info("="*70)
     logging.info("🤖 Smart Advisor Bot v5.1 Started (Enhanced API Integration)")
     logging.info(f"📊 Exchange: {EXCHANGE_TO_USE.upper()}")
@@ -1260,72 +1324,73 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
     # ارسال پیام شروع به کار
     send_startup_message()
     
-    iteration_count = 0
     successful_predictions = 0
     failed_attempts = 0
+    iteration_count = 0
     last_daily_reset = datetime.datetime.now().date()
     
-    while True:
-        try:
-            # بررسی ریست روزانه
-            current_date = datetime.datetime.now().date()
-            if current_date > last_daily_reset:
-                risk_manager.reset_daily_metrics()
-                last_daily_reset = current_date
-            
-            iteration_count += 1
-            logging.info(f"\n--- Iteration #{iteration_count} ---")
-            
-            # ایجاد لیست کارها
-            tasks = []
-            for symbol in PAIRS_TO_MONITOR:
-                for timeframe in TIMEFRAMES_TO_MONITOR:
-                    tasks.append((symbol, timeframe))
-            
-            logging.info(f"Processing {len(tasks)} pair-timeframe combinations...")
-            
-            # پردازش همزمان با ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_task = {
-                    executor.submit(process_pair, symbol, timeframe, expected_features): (symbol, timeframe)
-                    for symbol, timeframe in tasks
-                }
+    try:
+        while True:
+            try:
+                # بررسی ریست روزانه
+                current_date = datetime.datetime.now().date()
+                if current_date > last_daily_reset:
+                    risk_manager.reset_daily_metrics()
+                    last_daily_reset = current_date
                 
-                for future in as_completed(future_to_task):
-                    symbol, timeframe = future_to_task[future]
-                    try:
-                        result = future.result()
-                        if result['success']:
-                            successful_predictions += 1
-                            # لاگ threshold برای successful predictions
-                            if result.get('threshold_used'):
-                                logging.debug(f"✅ {symbol} {timeframe}: Threshold {result['threshold_used']:.4f}")
-                        else:
-                            if result['error'] not in ["Same candle as before"]:
-                                failed_attempts += 1
-                    except Exception as e:
-                        logging.error(f"Thread error for {symbol} {timeframe}: {e}")
-                        failed_attempts += 1
-            
-            # گزارش وضعیت دوره‌ای با اطلاعات مدل
-            if iteration_count % 10 == 0:
-                total_attempts = successful_predictions + failed_attempts
-                success_rate = (successful_predictions / total_attempts * 100) if total_attempts > 0 else 0
+                iteration_count += 1
+                logging.info(f"\n--- Iteration #{iteration_count} ---")
                 
-                # دریافت گزارش ریسک
-                risk_report = risk_manager.get_risk_report()
+                # ایجاد لیست کارها
+                tasks = []
+                for symbol in PAIRS_TO_MONITOR:
+                    for timeframe in TIMEFRAMES_TO_MONITOR:
+                        tasks.append((symbol, timeframe))
                 
-                # اطلاعات مدل
-                model_info_text = ""
-                if api_model_info:
-                    model_info_text = f"""
+                logging.info(f"Processing {len(tasks)} pair-timeframe combinations...")
+                
+                # پردازش همزمان با ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_task = {
+                        executor.submit(process_pair, symbol, timeframe, expected_features): (symbol, timeframe)
+                        for symbol, timeframe in tasks
+                    }
+                    
+                    for future in as_completed(future_to_task):
+                        symbol, timeframe = future_to_task[future]
+                        try:
+                            result = future.result()
+                            if result['success']:
+                                successful_predictions += 1
+                                # لاگ threshold برای successful predictions
+                                if result.get('threshold_used'):
+                                    logging.debug(f"✅ {symbol} {timeframe}: Threshold {result['threshold_used']:.4f}")
+                            else:
+                                if result['error'] not in ["Same candle as before"]:
+                                    failed_attempts += 1
+                        except Exception as e:
+                            logging.error(f"Thread error for {symbol} {timeframe}: {e}")
+                            failed_attempts += 1
+                
+                # گزارش وضعیت دوره‌ای با اطلاعات مدل
+                if iteration_count % 10 == 0:
+                    total_attempts = successful_predictions + failed_attempts
+                    success_rate = (successful_predictions / total_attempts * 100) if total_attempts > 0 else 0
+                    
+                    # دریافت گزارش ریسک
+                    risk_report = risk_manager.get_risk_report()
+                    
+                    # اطلاعات مدل
+                    model_info_text = ""
+                    if api_model_info:
+                        model_info_text = f"""
 🤖 <b>اطلاعات مدل:</b>
 • نوع: {api_model_info.get('model_type', 'Unknown')[:25]}
 • Threshold: {api_model_info.get('optimal_threshold', 0.5):.4f}
 • Optimized: {'✅' if api_model_info.get('is_optimized') else '❌'}
 """
-                
-                status_message = f"""
+                    
+                    status_message = f"""
 📊 <b>گزارش وضعیت دوره‌ای v5.1</b>
 
 • تعداد بررسی‌ها: {iteration_count}
@@ -1340,33 +1405,30 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
 
 🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
+                    
+                    logging.info(f"\n📊 Status Report (after {iteration_count} iterations):")
+                    logging.info(f"   - Successful Predictions: {successful_predictions}")
+                    logging.info(f"   - Failed Attempts: {failed_attempts}")
+                    logging.info(f"   - Success Rate: {success_rate:.1f}%")
+                    logging.info(f"   - Total Signals Generated: {len(signals_history)}")
+                    
+                    if api_model_info:
+                        logging.info(f"   - Model: {api_model_info.get('model_type', 'Unknown')}")
+                        logging.info(f"   - Threshold: {api_model_info.get('optimal_threshold', 0.5):.4f}")
+                    
+                    save_performance_metrics()
+                    
+                    # ارسال گزارش دوره‌ای به تلگرام
+                    if TELEGRAM_ENABLED and iteration_count % 50 == 0:  # هر 50 تکرار
+                        send_telegram_message(status_message)
                 
-                logging.info(f"\n📊 Status Report (after {iteration_count} iterations):")
-                logging.info(f"   - Successful Predictions: {successful_predictions}")
-                logging.info(f"   - Failed Attempts: {failed_attempts}")
-                logging.info(f"   - Success Rate: {success_rate:.1f}%")
-                logging.info(f"   - Total Signals Generated: {len(signals_history)}")
+            except Exception as e:
+                logging.error(f"Unexpected error in main loop: {e}", exc_info=True)
+                failed_attempts += 1
                 
-                if api_model_info:
-                    logging.info(f"   - Model: {api_model_info.get('model_type', 'Unknown')}")
-                    logging.info(f"   - Threshold: {api_model_info.get('optimal_threshold', 0.5):.4f}")
-                
-                save_performance_metrics()
-                
-                # ارسال گزارش دوره‌ای به تلگرام
-                if TELEGRAM_ENABLED and iteration_count % 50 == 0:  # هر 50 تکرار
-                    send_telegram_message(status_message)
-            
-        except KeyboardInterrupt:
-            logging.info("\n⛔ Bot stopped by user")
-            break
-        except Exception as e:
-            logging.error(f"Unexpected error in main loop: {e}", exc_info=True)
-            failed_attempts += 1
-            
-            # ارسال پیام خطا به تلگرام در صورت خطاهای مکرر
-            if failed_attempts % 5 == 0 and TELEGRAM_ENABLED:
-                error_message = f"""
+                # ارسال پیام خطا به تلگرام در صورت خطاهای مکرر
+                if failed_attempts % 5 == 0 and TELEGRAM_ENABLED:
+                    error_message = f"""
 ⚠️ <b>هشدار خطا v5.1</b>
 
 ربات با خطاهای مکرر مواجه شده است.
@@ -1376,39 +1438,17 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
 🔄 سیستم fallback فعال است.
 لطفاً وضعیت API و شبکه را بررسی کنید.
 """
-                send_telegram_message(error_message)
-            
-        time.sleep(POLL_INTERVAL_SECONDS)
-    
-    # ذخیره نهایی قبل از خروج
-    save_performance_metrics()
-    risk_manager.save_risk_metrics()
-    
-    # ارسال پیام خاموش شدن
-    if TELEGRAM_ENABLED:
-        total_attempts = successful_predictions + failed_attempts
-        final_risk_report = risk_manager.get_risk_report()
+                    send_telegram_message(error_message)
+                
+            time.sleep(POLL_INTERVAL_SECONDS)
         
-        shutdown_message = f"""
-🛑 <b>ربات مشاور هوشمند v5.1 متوقف شد</b>
-
-📊 <b>آمار نهایی:</b>
-• تعداد کل بررسی‌ها: {iteration_count}
-• سیگنال‌های صادر شده: {len(signals_history)}
-• نرخ موفقیت: {(successful_predictions / total_attempts * 100) if total_attempts > 0 else 0:.1f}%
-
-🤖 <b>مدل استفاده شده:</b>
-{api_model_info.get('model_type', 'Unknown')} {'(Optimized)' if api_model_info.get('is_optimized') else ''}
-
-{final_risk_report}
-
-🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-#BotStopped #v5_1
-"""
-        send_telegram_message(shutdown_message)
-    
-    logging.info("\n👋 Bot shutdown complete")
+    except KeyboardInterrupt:
+        logging.info("\n⛔ Bot stopped by user (KeyboardInterrupt)")
+    except Exception as e:
+        logging.error(f"Fatal error in main loop: {e}", exc_info=True)
+    finally:
+        # اجرای cleanup در هر صورت
+        cleanup_and_shutdown()
 
 def single_pair_loop(expected_features: Optional[List[str]] = None):
     """حلقه اصلی برای حالت تک جفت ارز (سازگاری با نسخه قبلی)"""
