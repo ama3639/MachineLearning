@@ -3,12 +3,13 @@
 
 """
 اسکریپت API پیش‌بینی با Flask (نسخه 5.1 - پشتیبانی Optimized Models)
+اصلاح شده برای حل مشکل HTTP 500 در health check
 
 ویژگی‌های جدید:
 - پشتیبانی از Optimized Model Package (model + optimal threshold)
 - سازگاری با Ensemble Models (RandomForest + XGBoost)
 - Enhanced Response با اطلاعات تفصیلی‌تر
-- بهبود Health Check
+- بهبود Health Check (رفع مشکل HTTP 500)
 - Fallback به مدل‌های قدیمی در صورت نیاز
 """
 import os
@@ -19,7 +20,7 @@ import logging
 from flask import Flask, request, jsonify
 import configparser
 import numpy as np
-from datetime import datetime
+from datetime import datetime  # 🔧 اضافه شدن import
 
 # --- بخش خواندن پیکربندی ---
 config = configparser.ConfigParser()
@@ -214,45 +215,65 @@ def index():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check با اطلاعات تفصیلی مدل"""
-    model = get_model()
-    health_status = {
-        'status': 'healthy' if model and scaler else 'unhealthy',
-        'model_loaded': model is not None,
-        'scaler_loaded': scaler is not None,
-        'timestamp': datetime.utcnow().isoformat() + 'Z'
-    }
-    
-    # اضافه کردن اطلاعات مدل
-    if model_info:
-        health_status.update({
-            'model_info': {
-                'model_type': model_info.get('model_type', 'Unknown'),
-                'model_file': model_info.get('model_file', 'Unknown'),
-                'scaler_file': model_info.get('scaler_file', 'Unknown'),
-                'is_optimized': model_info.get('is_optimized', False),
-                'optimal_threshold': model_info.get('optimal_threshold', 0.5),
-                'features_count': len(model_info.get('feature_columns', [])),
-                'performance': {
-                    'accuracy': model_info.get('accuracy'),
-                    'precision': model_info.get('precision'),
-                    'recall': model_info.get('recall')
-                } if model_info.get('accuracy') else None
-            }
-        })
-    
-    # محاسبه uptime (ساده)
+    """Health check با اطلاعات تفصیلی مدل (حل مشکل JSON serialization)"""
     try:
-        import psutil
-        process = psutil.Process()
-        uptime_seconds = (datetime.now() - datetime.fromtimestamp(process.create_time())).total_seconds()
-        health_status['uptime_seconds'] = round(uptime_seconds, 2)
-    except:
-        health_status['uptime_seconds'] = None
+        model = get_model()
+        health_status = {
+            'status': 'healthy' if model and scaler else 'unhealthy',
+            'model_loaded': model is not None,
+            'scaler_loaded': scaler is not None,
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+        
+        # اضافه کردن اطلاعات مدل (با تبدیل float32 به float)
+        try:
+            if model_info:
+                health_status.update({
+                    'model_info': {
+                        'model_type': str(model_info.get('model_type', 'Unknown')),
+                        'model_file': str(model_info.get('model_file', 'Unknown')),
+                        'scaler_file': str(model_info.get('scaler_file', 'Unknown')),
+                        'is_optimized': bool(model_info.get('is_optimized', False)),
+                        'optimal_threshold': float(model_info.get('optimal_threshold', 0.5)),
+                        'features_count': int(len(model_info.get('feature_columns', []))),
+                        'performance': {
+                            'accuracy': float(model_info.get('accuracy')) if model_info.get('accuracy') is not None else None,
+                            'precision': float(model_info.get('precision')) if model_info.get('precision') is not None else None,
+                            'recall': float(model_info.get('recall')) if model_info.get('recall') is not None else None
+                        } if model_info.get('accuracy') is not None else None
+                    }
+                })
+        except Exception as model_info_error:
+            logging.warning(f"Error in model_info: {model_info_error}")
+            health_status['model_info_error'] = str(model_info_error)
+        
+        # محاسبه uptime (با error handling)
+        try:
+            import psutil
+            process = psutil.Process()
+            uptime_seconds = (datetime.now() - datetime.fromtimestamp(process.create_time())).total_seconds()
+            health_status['uptime_seconds'] = float(uptime_seconds)
+        except ImportError:
+            health_status['uptime_seconds'] = None
+        except Exception as uptime_error:
+            logging.warning(f"Uptime calculation error: {uptime_error}")
+            health_status['uptime_seconds'] = None
+        
+        status_code = 200 if health_status['status'] == 'healthy' else 503
+        return jsonify(health_status), status_code
+        
+    except Exception as e:
+        # مدیریت کامل خطا
+        error_response = {
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'model_loaded': False,
+            'scaler_loaded': False
+        }
+        logging.error(f"Health check failed: {e}")
+        return jsonify(error_response), 500
     
-    status_code = 200 if health_status['status'] == 'healthy' else 503
-    return jsonify(health_status), status_code
-
 @app.route('/predict', methods=['POST'])
 def predict():
     if not get_model() or not scaler:
@@ -267,8 +288,28 @@ def predict():
         # لاگ کردن درخواست ورودی (فقط تعداد فیلدها)
         app.logger.info(f"Received prediction request with {len(input_data)} features")
         
+        # 🔧 پاک‌سازی input data
+        cleaned_data = {}
+        for k, v in input_data.items():
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                if np.isnan(v) or np.isinf(v):
+                    app.logger.warning(f"Skipping invalid value: {k}={v}")
+                    continue
+                # تبدیل numpy types به Python native
+                if isinstance(v, np.integer):
+                    cleaned_data[k] = int(v)
+                elif isinstance(v, np.floating):
+                    cleaned_data[k] = float(v)
+                else:
+                    cleaned_data[k] = v
+            else:
+                cleaned_data[k] = v
+        
+        if not cleaned_data:
+            return jsonify({"error": "No valid features in input data"}), 400
+        
         # تبدیل به DataFrame
-        df = pd.DataFrame([input_data])
+        df = pd.DataFrame([cleaned_data])
         
         # بررسی ویژگی‌های مورد نیاز (اگر موجود باشد)
         expected_features = model_info.get('feature_columns', [])
@@ -278,7 +319,8 @@ def predict():
                 return jsonify({
                     "error": f"Missing required features: {missing_features[:5]}{'...' if len(missing_features) > 5 else ''}",
                     "missing_count": len(missing_features),
-                    "total_expected": len(expected_features)
+                    "total_expected": len(expected_features),
+                    "received_features": len(df.columns)
                 }), 400
             
             # مرتب‌سازی ستون‌ها مطابق انتظارات مدل
@@ -293,31 +335,60 @@ def predict():
         if prediction_result is None:
             return jsonify({"error": "Prediction failed"}), 500
         
+        # 🔧 پاک‌سازی نتایج برای JSON serialization
+        def clean_for_json(obj):
+            """تبدیل numpy types به Python native types"""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: clean_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_for_json(item) for item in obj]
+            else:
+                return obj
+        
         # ساخت پاسخ کامل
         result = {
-            'prediction': prediction_result['prediction'],
-            'signal': prediction_result['signal'],
-            'confidence': prediction_result['confidence'],
-            'model_info': {
-                'model_type': model_info.get('model_type', 'Unknown'),
-                'threshold_used': prediction_result['threshold_used'],
-                'is_optimized': model_info.get('is_optimized', False),
-                'features_used': len(df.columns)
+            'prediction': int(prediction_result['prediction']),
+            'signal': str(prediction_result['signal']),
+            'confidence': {
+                'no_profit_prob': float(prediction_result['confidence']['no_profit_prob']),
+                'profit_prob': float(prediction_result['confidence']['profit_prob'])
             },
-            'performance_metrics': {
-                'model_accuracy': model_info.get('accuracy'),
-                'model_precision': model_info.get('precision'),
-                'model_recall': model_info.get('recall')
-            } if model_info.get('accuracy') else None,
+            'model_info': {
+                'model_type': str(model_info.get('model_type', 'Unknown')),
+                'threshold_used': float(prediction_result['threshold_used']),
+                'is_optimized': bool(model_info.get('is_optimized', False)),
+                'features_used': int(len(df.columns))
+            },
+            'performance_metrics': None,
             'processing_info': {
                 'processing_time_ms': round(processing_time, 2),
                 'timestamp_utc': end_time.isoformat() + 'Z'
             }
         }
         
+        # اضافه کردن performance metrics (با clean کردن)
+        if model_info.get('accuracy'):
+            result['performance_metrics'] = {
+                'model_accuracy': float(model_info.get('accuracy', 0)),
+                'model_precision': float(model_info.get('precision', 0)),
+                'model_recall': float(model_info.get('recall', 0))
+            }
+        
         # اضافه کردن احتمالات خام (برای debugging)
         if 'raw_probabilities' in prediction_result:
-            result['raw_probabilities'] = prediction_result['raw_probabilities']
+            result['raw_probabilities'] = {
+                'no_profit_raw': float(prediction_result['raw_probabilities']['no_profit_raw']),
+                'profit_raw': float(prediction_result['raw_probabilities']['profit_raw'])
+            }
+        
+        # پاک‌سازی نهایی
+        result = clean_for_json(result)
         
         app.logger.info(f"Prediction completed: Signal={result['signal']}, "
                        f"Confidence={result['confidence']['profit_prob']:.2%}, "
@@ -325,21 +396,34 @@ def predict():
         
         return jsonify(result)
 
+    except ValueError as e:
+        app.logger.error(f"Value error during prediction: {e}")
+        return jsonify({"error": f"Invalid data format: {str(e)}"}), 400
     except Exception as e:
         app.logger.error(f"Error during prediction: {e}", exc_info=True)
         return jsonify({"error": f"An internal error occurred: {str(e)}"}), 500
-
+    
+    
 @app.route('/model-info', methods=['GET'])
 def get_model_info():
     """Endpoint برای دریافت اطلاعات تفصیلی مدل"""
-    return jsonify({
-        'model_info': model_info,
-        'model_loaded': get_model() is not None,
-        'scaler_loaded': scaler is not None,
-        'api_version': '5.1',
-        'features_supported': len(model_info.get('feature_columns', [])),
-        'optimized_model': model_info.get('is_optimized', False)
-    })
+    try:
+        return jsonify({
+            'model_info': model_info,
+            'model_loaded': get_model() is not None,
+            'scaler_loaded': scaler is not None,
+            'api_version': '5.1',
+            'features_supported': len(model_info.get('feature_columns', [])),
+            'optimized_model': model_info.get('is_optimized', False)
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'model_info': {},
+            'model_loaded': False,
+            'scaler_loaded': False,
+            'api_version': '5.1'
+        }), 500
 
 if __name__ == '__main__':
     print(f"--- Starting Enhanced Prediction API Server v5.1 ---")

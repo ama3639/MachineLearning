@@ -346,13 +346,19 @@ class RiskManager:
 risk_manager = RiskManager()
 
 # === بخش جدید: API Health Check ===
+# === بخش جدید: API Health Check بهبود یافته ===
 def check_api_health():
-    """بررسی سلامت API و دریافت اطلاعات مدل"""
+    """بررسی سلامت API و دریافت اطلاعات مدل (اصلاح شده)"""
     global api_model_info
     
     try:
-        # Health check
-        health_response = requests.get(API_HEALTH_URL, timeout=5)
+        # Health check با timeout بیشتر
+        logging.info(f"🔍 Checking API health at {API_HEALTH_URL}")
+        health_response = requests.get(API_HEALTH_URL, timeout=10)
+        
+        # لاگ response برای debugging
+        logging.info(f"📡 API Response Status: {health_response.status_code}")
+        
         if health_response.status_code == 200:
             health_data = health_response.json()
             
@@ -380,14 +386,75 @@ def check_api_health():
                 return True
             else:
                 logging.error("❌ API Health Check: Unhealthy")
+                logging.error(f"📋 Health response: {health_data}")
                 return False
+                
+        elif health_response.status_code == 500:
+            # خطای سرور - تلاش برای دریافت جزئیات خطا
+            try:
+                error_data = health_response.json()
+                logging.error(f"❌ API Health Check failed (HTTP 500): {error_data}")
+            except:
+                error_text = health_response.text[:200]  # اول 200 کاراکتر
+                logging.error(f"❌ API Health Check failed (HTTP 500): {error_text}")
+            return False
         else:
             logging.error(f"❌ API Health Check failed: HTTP {health_response.status_code}")
+            try:
+                response_text = health_response.text[:200]
+                logging.error(f"📋 Response: {response_text}")
+            except:
+                pass
             return False
             
+    except requests.exceptions.ConnectionError as e:
+        logging.error(f"❌ Connection Error: API server not reachable - {e}")
+        return False
+    except requests.exceptions.Timeout as e:
+        logging.error(f"❌ Timeout Error: API server too slow - {e}")
+        return False
     except Exception as e:
         logging.error(f"❌ API Health Check error: {e}")
         return False
+
+# === اصلاح بخش test API connection ===
+def test_api_connection():
+    """تست اتصال API با جزئیات بیشتر"""
+    print("\n🔍 Testing API Connection...")
+    
+    # تست endpoint اصلی
+    try:
+        response = requests.get(f"http://{API_HOST}:{API_PORT}/", timeout=10)
+        if response.status_code == 200:
+            print(f"✅ Main endpoint accessible: {response.text[:50]}...")
+        else:
+            print(f"⚠️ Main endpoint returned: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Main endpoint failed: {e}")
+    
+    # تست health endpoint
+    try:
+        response = requests.get(f"http://{API_HOST}:{API_PORT}/health", timeout=10)
+        print(f"📊 Health endpoint status: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Health check successful: {data.get('status')}")
+            return True
+        elif response.status_code == 500:
+            print(f"❌ Server error in health endpoint")
+            try:
+                error_data = response.json()
+                print(f"📋 Error details: {error_data}")
+            except:
+                print(f"📋 Error text: {response.text[:200]}")
+        else:
+            print(f"⚠️ Unexpected status: {response.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Health endpoint test failed: {e}")
+    
+    return False
 
 # --- بخش ۳: توابع تلگرام (با افزودن گزارش ریسک) ---
 def send_telegram_message(message: str) -> bool:
@@ -644,6 +711,13 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     try:
         group = df.copy()
         
+        # 🔧 اصلاح مشکل dtype - تبدیل volume به float64
+        group['volume'] = group['volume'].astype('float64')
+        group['high'] = group['high'].astype('float64')
+        group['low'] = group['low'].astype('float64')
+        group['close'] = group['close'].astype('float64')
+        group['open'] = group['open'].astype('float64')
+        
         # محاسبات مطابق با پارامترهای config
         group['rsi'] = ta.rsi(group['close'], length=INDICATOR_PARAMS['rsi_length'])
         
@@ -683,7 +757,14 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         
         group['obv'] = ta.obv(group['close'], group['volume'])
         group['obv_change'] = group['obv'].pct_change()
-        group['mfi'] = ta.mfi(group['high'], group['low'], group['close'], group['volume'], length=14)
+        
+        # 🔧 اصلاح MFI calculation با error handling
+        try:
+            group['mfi'] = ta.mfi(group['high'], group['low'], group['close'], group['volume'], length=14)
+        except Exception as mfi_error:
+            logging.warning(f"MFI calculation failed: {mfi_error}. Using default value.")
+            group['mfi'] = 50.0  # مقدار پیش‌فرض
+        
         group['ad'] = ta.ad(group['high'], group['low'], group['close'], group['volume'])
         
         stoch = ta.stoch(group['high'], group['low'], group['close'], k=14, d=3, smooth_k=3)
@@ -758,31 +839,138 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         # ذخیره مقدار ATR برای محاسبات Risk Management
         latest_atr = group['atr'].iloc[-1]
         
-        # فیلتر کردن NaN ها
-        features_for_api = {k: v for k, v in latest_features.items() if pd.notna(v)}
+        # 🔧 فیلتر کردن NaN ها و مقادیر inf (اصلاح شده)
+        features_for_api = {}
+        for k, v in latest_features.items():
+            try:
+                # بررسی نوع داده و validity
+                if pd.notna(v):
+                    # بررسی برای انواع numeric
+                    if isinstance(v, (int, float, np.integer, np.floating)):
+                        if not np.isinf(v):
+                            # تبدیل numpy types به Python native types
+                            if isinstance(v, np.integer):
+                                features_for_api[k] = int(v)
+                            elif isinstance(v, np.floating):
+                                features_for_api[k] = float(v)
+                            else:
+                                features_for_api[k] = v
+                    # برای انواع non-numeric، مستقیماً اضافه کن
+                    elif isinstance(v, (str, bool)):
+                        features_for_api[k] = v
+                    # برای datetime objects
+                    elif hasattr(v, 'timestamp'):
+                        continue  # رد کردن timestamp ها
+                    else:
+                        # سایر انواع - تلاش برای تبدیل به string
+                        try:
+                            str_val = str(v)
+                            if str_val not in ['nan', 'inf', '-inf', 'NaT']:
+                                features_for_api[k] = str_val
+                        except:
+                            continue  # رد کردن مقادیر غیرقابل تبدیل
+            except Exception as e:
+                logging.warning(f"Error processing feature {k}={v}: {e}")
+                continue
         
         # حذف timestamp
         features_for_api.pop('timestamp', None)
         
+        # 🔧 بررسی مقادیر معقول (حذف outliers)
+        cleaned_features = {}
+        for k, v in features_for_api.items():
+            if isinstance(v, (int, float)):
+                # حذف مقادیر خیلی بزرگ یا خیلی کوچک
+                if abs(v) < 1e10 and abs(v) > 1e-10:
+                    cleaned_features[k] = v
+                else:
+                    logging.warning(f"Outlier value removed: {k}={v}")
+            else:
+                cleaned_features[k] = v
+        
         # افزودن ATR به خروجی (برای Risk Management)
-        features_for_api['_atr_value'] = latest_atr
+        if not np.isinf(latest_atr) and pd.notna(latest_atr):
+            cleaned_features['_atr_value'] = float(latest_atr)
+        else:
+            cleaned_features['_atr_value'] = 1.0  # مقدار پیش‌فرض
         
         # بررسی تعداد ویژگی‌ها
-        logging.info(f"تعداد ویژگی‌های محاسبه شده: {len(features_for_api)}")
+        logging.info(f"تعداد ویژگی‌های محاسبه شده: {len(cleaned_features)}")
         
-        return features_for_api
+        return cleaned_features
         
     except Exception as e:
         logging.error(f"خطا در محاسبه ویژگی‌ها: {e}", exc_info=True)
         return None
-
+        
 def get_prediction(payload: Dict) -> Optional[Dict]:
-    """ارسال درخواست به API پیش‌بینی بهبود یافته"""
+    """ارسال درخواست به API پیش‌بینی بهبود یافته با debugging"""
     try:
         # حذف ATR از payload قبل از ارسال به API
         atr_value = payload.pop('_atr_value', None)
         
-        response = requests.post(API_URL, json=payload, timeout=10)
+        # 🔧 Debugging: بررسی payload قبل از ارسال
+        logging.debug(f"Payload size: {len(payload)} features")
+        
+        # بررسی مقادیر مشکوک
+        problematic_values = []
+        for k, v in payload.items():
+            if isinstance(v, (int, float)):
+                if np.isinf(v) or np.isnan(v) or abs(v) > 1e8:
+                    problematic_values.append(f"{k}={v}")
+        
+        if problematic_values:
+            logging.warning(f"Problematic values detected: {problematic_values[:5]}")
+            # حذف مقادیر مشکوک
+            cleaned_payload = {}
+            for k, v in payload.items():
+                if isinstance(v, (int, float)):
+                    if not (np.isinf(v) or np.isnan(v) or abs(v) > 1e8):
+                        cleaned_payload[k] = v
+                else:
+                    cleaned_payload[k] = v
+            payload = cleaned_payload
+            logging.info(f"Cleaned payload size: {len(payload)} features")
+        
+        # تبدیل payload به JSON قابل serialize
+        json_payload = {}
+        for k, v in payload.items():
+            if isinstance(v, np.integer):
+                json_payload[k] = int(v)
+            elif isinstance(v, np.floating):
+                json_payload[k] = float(v)
+            elif isinstance(v, (int, float, str, bool)):
+                json_payload[k] = v
+            else:
+                logging.warning(f"Skipping non-serializable value: {k}={type(v)}")
+        
+        # ارسال درخواست
+        response = requests.post(API_URL, json=json_payload, timeout=15)
+        
+        if response.status_code == 500:
+            # لاگ جزئیات خطای سرور
+            try:
+                error_detail = response.json()
+                logging.error(f"API Server Error Details: {error_detail}")
+            except:
+                error_text = response.text[:500]
+                logging.error(f"API Server Error Text: {error_text}")
+            
+            # تلاش با payload کوچکتر برای debugging
+            if len(json_payload) > 20:
+                logging.info("Trying with minimal payload for debugging...")
+                minimal_payload = {k: v for i, (k, v) in enumerate(json_payload.items()) if i < 10}
+                try:
+                    debug_response = requests.post(API_URL, json=minimal_payload, timeout=10)
+                    if debug_response.status_code == 200:
+                        logging.info("Minimal payload works. Issue is with specific features.")
+                    else:
+                        logging.error(f"Even minimal payload fails: {debug_response.status_code}")
+                except Exception as debug_error:
+                    logging.error(f"Debug request failed: {debug_error}")
+            
+            return None
+        
         response.raise_for_status()
         
         result = response.json()
@@ -802,7 +990,10 @@ def get_prediction(payload: Dict) -> Optional[Dict]:
     except requests.exceptions.RequestException as e:
         logging.error(f"خطا در برقراری ارتباط با API: {e}")
         return None
-
+    except Exception as e:
+        logging.error(f"Unexpected error in get_prediction: {e}")
+        return None
+    
 def save_signal(signal_data: Dict):
     """ذخیره سیگنال در فایل JSON"""
     with signals_lock:
