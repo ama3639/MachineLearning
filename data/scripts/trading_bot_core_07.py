@@ -949,22 +949,58 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         group['volume_ma'] = group['volume'].rolling(20).mean()
         group['volume_ratio'] = group['volume'] / group['volume_ma']
         
+        # try:
+        #     psar = ta.psar(group['high'], group['low'], group['close'])
+        #     if psar is not None and len(psar) > 0:
+        #         if isinstance(psar, pd.DataFrame):
+        #             group['psar'] = psar.iloc[:, 0]
+        #         else:
+        #             group['psar'] = psar
+        #         group['price_above_psar'] = (group['close'] > group['psar']).astype(int)
+        #     else:
+        #         group['psar'] = group['close'].shift(1).fillna(group['close']) * 0.98
+        #         group['price_above_psar'] = 1
+        # except Exception as e:
+        #     group['psar'] = group['close'].shift(1).fillna(group['close']) * 0.98  
+        #     group['price_above_psar'] = 1
+        
+
+
+
+        # PSAR - اصلاح شده
         try:
-            psar = ta.psar(group['high'], group['low'], group['close'])
-            if psar is not None and len(psar) > 0:
-                if isinstance(psar, pd.DataFrame):
-                    group['psar'] = psar.iloc[:, 0]
+            psar_result = ta.psar(group['high'], group['low'], group['close'])
+            if psar_result is not None and not psar_result.empty:
+                if isinstance(psar_result, pd.DataFrame):
+                    # استخراج ستون‌های long و short
+                    psar_long = psar_result.iloc[:, 0]  # PSARl_0.02_0.2
+                    psar_short = psar_result.iloc[:, 1]  # PSARs_0.02_0.2
+                    
+                    # ترکیب long و short - اگر long موجود است از آن استفاده کن، وگرنه short
+                    group['psar'] = psar_long.fillna(psar_short)
                 else:
-                    group['psar'] = psar
+                    group['psar'] = psar_result
+                
+                # اگر هنوز NaN داریم، با مقدار پیش‌فرض پر کنیم
+                group['psar'] = group['psar'].fillna(group['close'] * 0.98)
                 group['price_above_psar'] = (group['close'] > group['psar']).astype(int)
             else:
-                group['psar'] = group['close'].shift(1).fillna(group['close']) * 0.98
+                # مقدار پیش‌فرض
+                group['psar'] = group['close'] * 0.98
                 group['price_above_psar'] = 1
         except Exception as e:
-            group['psar'] = group['close'].shift(1).fillna(group['close']) * 0.98  
+            logging.warning(f"PSAR calculation failed: {e}. Using default values.")
+            group['psar'] = group['close'] * 0.98
             group['price_above_psar'] = 1
-        
+
+        # اطمینان از وجود PSAR در خروجی
+        if 'psar' not in group.columns or group['psar'].isna().all():
+            group['psar'] = group['close'] * 0.98
+            group['price_above_psar'] = 1
+
+
         adx = ta.adx(group['high'], group['low'], group['close'], length=14)
+
         if adx is not None and not adx.empty:
             col_names = adx.columns.tolist()
             for col in col_names:

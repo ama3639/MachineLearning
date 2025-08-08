@@ -481,21 +481,58 @@ def calculate_complete_features_for_web(close_price, volume, high_price=None, lo
         df['volume_ma'] = df['volume'].rolling(20).mean()
         df['volume_ratio'] = df['volume'] / df['volume_ma']
         
-        # PSAR
+        # # PSAR
+        # try:
+        #     psar = ta.psar(df['high'], df['low'], df['close'])
+        #     if psar is not None and len(psar) > 0:
+        #         if isinstance(psar, pd.DataFrame):
+        #             df['psar'] = psar.iloc[:, 0]
+        #         else:
+        #             df['psar'] = psar
+        #         df['price_above_psar'] = (df['close'] > df['psar']).astype(int)
+        #     else:
+        #         df['psar'] = df['close'].shift(1).fillna(df['close']) * 0.98
+        #         df['price_above_psar'] = 1
+        # except:
+        #     df['psar'] = df['close'].shift(1).fillna(df['close']) * 0.98
+        #     df['price_above_psar'] = 1
+
+
+        # اصلاح محاسبه PSAR در تابع calculate_features (فایل 07) و calculate_complete_features_for_web (فایل 09)
+
+        # جایگزین کنید بخش PSAR را با این کد:
+
+        # PSAR - اصلاح شده
         try:
-            psar = ta.psar(df['high'], df['low'], df['close'])
-            if psar is not None and len(psar) > 0:
-                if isinstance(psar, pd.DataFrame):
-                    df['psar'] = psar.iloc[:, 0]
+            psar_result = ta.psar(df['high'], df['low'], df['close'])
+            if psar_result is not None and not psar_result.empty:
+                if isinstance(psar_result, pd.DataFrame):
+                    # استخراج ستون‌های long و short
+                    psar_long = psar_result.iloc[:, 0]  # PSARl_0.02_0.2
+                    psar_short = psar_result.iloc[:, 1]  # PSARs_0.02_0.2
+                    
+                    # ترکیب long و short - اگر long موجود است از آن استفاده کن، وگرنه short
+                    df['psar'] = psar_long.fillna(psar_short)
                 else:
-                    df['psar'] = psar
+                    df['psar'] = psar_result
+
+                # اگر هنوز NaN داریم، با مقدار پیش‌فرض پر کنیم
+                df['psar'] = df['psar'].fillna(df['close'] * 0.98)
                 df['price_above_psar'] = (df['close'] > df['psar']).astype(int)
             else:
-                df['psar'] = df['close'].shift(1).fillna(df['close']) * 0.98
+                # مقدار پیش‌فرض
+                df['psar'] = df['close'] * 0.98
                 df['price_above_psar'] = 1
-        except:
-            df['psar'] = df['close'].shift(1).fillna(df['close']) * 0.98
+        except Exception as e:
+            logging.warning(f"PSAR calculation failed: {e}. Using default values.")
+            df['psar'] = df['close'] * 0.98
             df['price_above_psar'] = 1
+
+        # اطمینان از وجود PSAR در خروجی
+        if 'psar' not in df.columns or df['psar'].isna().all():
+            df['psar'] = df['close'] * 0.98
+            df['price_above_psar'] = 1
+
         
         # ADX
         adx = ta.adx(df['high'], df['low'], df['close'], length=14)
