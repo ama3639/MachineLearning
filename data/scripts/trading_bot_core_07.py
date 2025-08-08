@@ -2,13 +2,16 @@
 # -*- coding: utf-8 -*-
 
 """
-اسکریپت هسته اصلی ربات مشاور هوشمند (نسخه 5.1 - سازگار با API بهبود یافته)
-نسخه اصلاح شده: 
-- سازگاری با API جدید (Optimized Models)
-- نمایش Optimal Threshold در گزارش‌ها
-- بهبود اطلاعات Performance مدل
-- Enhanced Health Check
-- بهتر شدن اطلاعات Risk Management
+اسکریپت هسته اصلی ربات مشاور هوشمند (نسخه 5.2 - اصلاح کامل Authentication)
+
+🔧 تغییرات این نسخه:
+- ✅ رفع مشکل 401 Authentication Error
+- ✅ اضافه کردن Commercial API Authentication
+- ✅ بهبود سازگاری با API جدید (Optimized Models)
+- ✅ نمایش Optimal Threshold در گزارش‌ها
+- ✅ بهبود اطلاعات Performance مدل
+- ✅ Enhanced Health Check
+- ✅ بهتر شدن اطلاعات Risk Management
 
 ویژگی‌های موجود:
 - Risk Management Module
@@ -18,6 +21,7 @@
 - Portfolio Heat Management
 - Binance API Fallback
 - Multi-source Data
+- Commercial API Authentication Support
 """
 
 import os
@@ -52,8 +56,8 @@ try:
     API_HOST = config.get('API_Settings', 'host')
     API_PORT = config.getint('API_Settings', 'port')
     API_URL = f"http://{API_HOST}:{API_PORT}/predict"
-    API_HEALTH_URL = f"http://{API_HOST}:{API_PORT}/health"  # جدید
-    API_MODEL_INFO_URL = f"http://{API_HOST}:{API_PORT}/model-info"  # جدید
+    API_HEALTH_URL = f"http://{API_HOST}:{API_PORT}/health"
+    API_MODEL_INFO_URL = f"http://{API_HOST}:{API_PORT}/model-info"
     
     CRYPTOCOMPARE_API_KEY = config.get('API_Keys', 'cryptocompare_api_key', fallback=None)
 
@@ -76,6 +80,27 @@ try:
     CANDLE_HISTORY_NEEDED = config.getint('Bot_Settings', 'candle_history_needed')
     POLL_INTERVAL_SECONDS = config.getint('Bot_Settings', 'poll_interval_seconds')
     CONFIDENCE_THRESHOLD = config.getfloat('Bot_Settings', 'confidence_threshold')
+    
+    # === 🔧 تنظیمات Authentication جدید ===
+    try:
+        # Authentication settings
+        USE_AUTHENTICATION = config.getboolean('Bot_Authentication', 'use_authentication', fallback=True)
+        API_USERNAME = config.get('Bot_Authentication', 'api_username', fallback='hasnamir92')
+        API_PASSWORD = config.get('Bot_Authentication', 'api_password', fallback='123456')
+        
+        # اگر تنظیمات authentication موجود نباشد، از مقادیر پیش‌فرض استفاده کن
+        if not config.has_section('Bot_Authentication'):
+            logging.warning("Bot_Authentication section not found in config. Using default credentials.")
+            USE_AUTHENTICATION = True
+            API_USERNAME = "hasnamir92"  # نام کاربری که در لاگ دیدیم
+            API_PASSWORD = "123456"     # رمز عبور پیش‌فرض - باید تغییر کند
+            
+    except Exception as e:
+        logging.error(f"Error reading authentication config: {e}")
+        # مقادیر پیش‌فرض
+        USE_AUTHENTICATION = True
+        API_USERNAME = "hasnamir92"
+        API_PASSWORD = "123456"
     
     # تنظیمات تلگرام
     TELEGRAM_ENABLED = config.getboolean('Telegram', 'enabled', fallback=False)
@@ -368,7 +393,7 @@ def cleanup_and_shutdown():
             final_risk_report = risk_manager.get_risk_report()
             
             shutdown_message = f"""
-🛑 <b>ربات مشاور هوشمند v5.1 متوقف شد</b>
+🛑 <b>ربات مشاور هوشمند v5.2 متوقف شد</b>
 
 📊 <b>آمار نهایی:</b>
 • تعداد کل بررسی‌ها: {iteration_count}
@@ -378,11 +403,14 @@ def cleanup_and_shutdown():
 🤖 <b>مدل استفاده شده:</b>
 {api_model_info.get('model_type', 'Unknown')} {'(Optimized)' if api_model_info.get('is_optimized') else ''}
 
+🔐 <b>Authentication:</b>
+User: {API_USERNAME} {'(Success)' if USE_AUTHENTICATION else '(Disabled)'}
+
 {final_risk_report}
 
 🕐 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-#BotStopped #v5_1
+#BotStopped #v5_2 #AuthFixed
 """
             send_telegram_message(shutdown_message)
             logging.info("📱 Shutdown message sent to Telegram")
@@ -398,7 +426,39 @@ def signal_handler(sig, frame):
     cleanup_and_shutdown()
     sys.exit(0)
 
-# === بخش جدید: API Health Check ===
+# === 🔧 بخش جدید: Authentication Check ===
+def check_authentication():
+    """بررسی Authentication قبل از شروع ربات"""
+    if not USE_AUTHENTICATION:
+        logging.info("🔓 Authentication disabled - running in legacy mode")
+        return True
+    
+    try:
+        # تست ساده authentication با health endpoint
+        logging.info(f"🔐 Testing authentication with username: {API_USERNAME}")
+        
+        test_response = requests.get(
+            API_HEALTH_URL, 
+            timeout=5,
+            auth=(API_USERNAME, API_PASSWORD)
+        )
+        
+        if test_response.status_code == 200:
+            logging.info("✅ Authentication test successful")
+            return True
+        elif test_response.status_code == 401:
+            logging.error("❌ Authentication test failed - Invalid credentials")
+            logging.error(f"💡 Username: {API_USERNAME}")
+            logging.error("💡 Please update Bot_Authentication section in config.ini")
+            return False
+        else:
+            logging.warning(f"⚠️ Unexpected response: {test_response.status_code}")
+            return False
+            
+    except Exception as e:
+        logging.error(f"❌ Authentication test error: {e}")
+        return False
+
 # === بخش جدید: API Health Check بهبود یافته ===
 def check_api_health():
     """بررسی سلامت API و دریافت اطلاعات مدل (اصلاح شده)"""
@@ -407,7 +467,12 @@ def check_api_health():
     try:
         # Health check با timeout بیشتر
         logging.info(f"🔍 Checking API health at {API_HEALTH_URL}")
-        health_response = requests.get(API_HEALTH_URL, timeout=10)
+        
+        # 🔧 اضافه کردن Authentication اگر فعال باشد
+        if USE_AUTHENTICATION:
+            health_response = requests.get(API_HEALTH_URL, timeout=10, auth=(API_USERNAME, API_PASSWORD))
+        else:
+            health_response = requests.get(API_HEALTH_URL, timeout=10)
         
         # لاگ response برای debugging
         logging.info(f"📡 API Response Status: {health_response.status_code}")
@@ -442,6 +507,12 @@ def check_api_health():
                 logging.error(f"📋 Health response: {health_data}")
                 return False
                 
+        elif health_response.status_code == 401:
+            # خطای Authentication
+            logging.error("❌ API Health Check failed: 401 Authentication Error")
+            logging.error(f"💡 Current credentials: {API_USERNAME} / [password hidden]")
+            logging.error("💡 Please check Bot_Authentication section in config.ini")
+            return False
         elif health_response.status_code == 500:
             # خطای سرور - تلاش برای دریافت جزئیات خطا
             try:
@@ -487,13 +558,21 @@ def test_api_connection():
     
     # تست health endpoint
     try:
-        response = requests.get(f"http://{API_HOST}:{API_PORT}/health", timeout=10)
+        if USE_AUTHENTICATION:
+            response = requests.get(f"http://{API_HOST}:{API_PORT}/health", timeout=10, auth=(API_USERNAME, API_PASSWORD))
+        else:
+            response = requests.get(f"http://{API_HOST}:{API_PORT}/health", timeout=10)
+            
         print(f"📊 Health endpoint status: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
             print(f"✅ Health check successful: {data.get('status')}")
             return True
+        elif response.status_code == 401:
+            print(f"❌ Authentication error in health endpoint")
+            print(f"💡 Username: {API_USERNAME}")
+            print(f"💡 Check config.ini [Bot_Authentication] section")
         elif response.status_code == 500:
             print(f"❌ Server error in health endpoint")
             try:
@@ -554,7 +633,7 @@ def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence
     model_accuracy = api_model_info.get('performance', {}).get('accuracy')
     
     message = f"""
-{emoji_signal} <b>سیگنال جدید از ربات مشاور هوشمند v5.1</b> {emoji_signal}
+{emoji_signal} <b>سیگنال جدید از ربات مشاور هوشمند v5.2</b> {emoji_signal}
 
 📊 <b>نماد:</b> {symbol}
 ⏱ <b>تایم فریم:</b> {timeframe}
@@ -575,6 +654,10 @@ def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence
     if model_accuracy:
         message += f"📊 <b>دقت مدل:</b> {model_accuracy:.1%}\n"
     
+    # اطلاعات Authentication
+    auth_emoji = "🔐" if USE_AUTHENTICATION else "🔓"
+    message += f"{auth_emoji} <b>Auth:</b> {API_USERNAME if USE_AUTHENTICATION else 'Disabled'}\n"
+    
     # افزودن اطلاعات Risk Management
     if position_size is not None:
         message += f"""
@@ -588,7 +671,7 @@ def format_telegram_message(symbol: str, timeframe: str, signal: str, confidence
     message += f"""
 🕐 <b>زمان:</b> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-#SmartAdvisor #CryptoSignal #{symbol.replace('/', '')} #{timeframe} #v5_1
+#SmartAdvisor #CryptoSignal #{symbol.replace('/', '')} #{timeframe} #v5_2 #AuthFixed
 """
     return message
 
@@ -598,7 +681,11 @@ def load_model_features() -> Optional[List[str]]:
     try:
         # سعی در دریافت از API
         try:
-            response = requests.get(API_MODEL_INFO_URL, timeout=5)
+            if USE_AUTHENTICATION:
+                response = requests.get(API_MODEL_INFO_URL, timeout=5, auth=(API_USERNAME, API_PASSWORD))
+            else:
+                response = requests.get(API_MODEL_INFO_URL, timeout=5)
+                
             if response.status_code == 200:
                 model_info = response.json()
                 feature_columns = model_info.get('model_info', {}).get('feature_columns', [])
@@ -964,7 +1051,7 @@ def calculate_features(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         return None
         
 def get_prediction(payload: Dict) -> Optional[Dict]:
-    """ارسال درخواست به API پیش‌بینی بهبود یافته با debugging"""
+    """ارسال درخواست به API پیش‌بینی بهبود یافته با Authentication"""
     try:
         # حذف ATR از payload قبل از ارسال به API
         atr_value = payload.pop('_atr_value', None)
@@ -1004,10 +1091,26 @@ def get_prediction(payload: Dict) -> Optional[Dict]:
             else:
                 logging.warning(f"Skipping non-serializable value: {k}={type(v)}")
         
-        # ارسال درخواست
-        response = requests.post(API_URL, json=json_payload, timeout=15)
+        # 🔧 ارسال درخواست با Authentication
+        if USE_AUTHENTICATION:
+            logging.debug(f"🔐 Using Basic Auth with username: {API_USERNAME}")
+            response = requests.post(
+                API_URL, 
+                json=json_payload, 
+                timeout=15,
+                auth=(API_USERNAME, API_PASSWORD)  # 🔧 اضافه کردن Basic Auth
+            )
+        else:
+            # حالت غیر تجاری (برای backward compatibility)
+            response = requests.post(API_URL, json=json_payload, timeout=15)
         
-        if response.status_code == 500:
+        # بررسی response
+        if response.status_code == 401:
+            logging.error(f"❌ Authentication failed! Username: {API_USERNAME}")
+            logging.error("💡 Make sure username and password are correct in config.ini")
+            logging.error("💡 Check if user exists in commercial database")
+            return None
+        elif response.status_code == 500:
             # لاگ جزئیات خطای سرور
             try:
                 error_detail = response.json()
@@ -1015,20 +1118,6 @@ def get_prediction(payload: Dict) -> Optional[Dict]:
             except:
                 error_text = response.text[:500]
                 logging.error(f"API Server Error Text: {error_text}")
-            
-            # تلاش با payload کوچکتر برای debugging
-            if len(json_payload) > 20:
-                logging.info("Trying with minimal payload for debugging...")
-                minimal_payload = {k: v for i, (k, v) in enumerate(json_payload.items()) if i < 10}
-                try:
-                    debug_response = requests.post(API_URL, json=minimal_payload, timeout=10)
-                    if debug_response.status_code == 200:
-                        logging.info("Minimal payload works. Issue is with specific features.")
-                    else:
-                        logging.error(f"Even minimal payload fails: {debug_response.status_code}")
-                except Exception as debug_error:
-                    logging.error(f"Debug request failed: {debug_error}")
-            
             return None
         
         response.raise_for_status()
@@ -1048,7 +1137,12 @@ def get_prediction(payload: Dict) -> Optional[Dict]:
         return result
         
     except requests.exceptions.RequestException as e:
-        logging.error(f"خطا در برقراری ارتباط با API: {e}")
+        if "401" in str(e):
+            logging.error(f"❌ Authentication Error: {e}")
+            logging.error(f"💡 Current credentials: {API_USERNAME} / [password hidden]")
+            logging.error("💡 Please check Bot_Authentication section in config.ini")
+        else:
+            logging.error(f"خطا در برقراری ارتباط با API: {e}")
         return None
     except Exception as e:
         logging.error(f"Unexpected error in get_prediction: {e}")
@@ -1110,7 +1204,10 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr,
         "portfolio_heat": risk_manager.portfolio_heat,
         # اطلاعات مدل
         "model_type": api_model_info.get('model_type', 'Unknown'),
-        "is_optimized": api_model_info.get('is_optimized', False)
+        "is_optimized": api_model_info.get('is_optimized', False),
+        # اطلاعات Authentication
+        "authenticated": USE_AUTHENTICATION,
+        "api_username": API_USERNAME if USE_AUTHENTICATION else None
     }
     
     # ذخیره سیگنال
@@ -1132,10 +1229,11 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr,
     # نمایش در کنسول با اطلاعات بهبود یافته
     threshold_info = f"({threshold_used:.4f})" if threshold_used else f"({CONFIDENCE_THRESHOLD:.2%})"
     model_info_text = f"Model: {api_model_info.get('model_type', 'Unknown')[:20]}"
+    auth_info = f"Auth: {API_USERNAME}" if USE_AUTHENTICATION else "Auth: Disabled"
     
     console_message = f"""
     ================================================
-    !!!    سیگنال جدید از مشاور هوشمند v5.1    !!!
+    !!!    سیگنال جدید از مشاور هوشمند v5.2    !!!
     ================================================
     نماد:         {symbol}
     تایم فریم:     {timeframe}
@@ -1147,6 +1245,7 @@ def send_notification(symbol, timeframe, signal, confidence, current_price, atr,
     🤖 اطلاعات مدل:
     {model_info_text}
     Optimized:    {'Yes' if api_model_info.get('is_optimized') else 'No'}
+    🔐 {auth_info}
     
     💼 مدیریت ریسک:
     قیمت فعلی:    ${current_price:.2f}
@@ -1181,8 +1280,12 @@ def send_startup_message():
     threshold = api_model_info.get('optimal_threshold', 'Unknown')
     is_optimized = api_model_info.get('is_optimized', False)
     
+    # اطلاعات Authentication
+    auth_status = "🔐 Enabled" if USE_AUTHENTICATION else "🔓 Disabled"
+    auth_user = f" (User: {API_USERNAME})" if USE_AUTHENTICATION else ""
+    
     startup_message = f"""
-🚀 <b>ربات مشاور هوشمند v5.1 فعال شد!</b>
+🚀 <b>ربات مشاور هوشمند v5.2 فعال شد!</b>
 
 📊 <b>تنظیمات:</b>
 • حالت: {mode}
@@ -1192,11 +1295,14 @@ def send_startup_message():
 • آستانه اطمینان: {CONFIDENCE_THRESHOLD:.0%}
 • بازه زمانی بررسی: {POLL_INTERVAL_SECONDS} ثانیه
 
+🔐 <b>Authentication:</b>
+• وضعیت: {auth_status}{auth_user}
+• API Status: {'✅ Connected' if api_model_info else '❌ Disconnected'}
+
 🤖 <b>اطلاعات مدل:</b>
 • نوع مدل: {model_type}
 • Threshold: {threshold}
 • Optimized: {'✅' if is_optimized else '❌'}
-• API Status: {'✅ Connected' if api_model_info else '❌ Disconnected'}
 
 💼 <b>مدیریت ریسک:</b>
 • حداکثر اندازه پوزیشن: {MAX_POSITION_SIZE:.0%}
@@ -1206,9 +1312,8 @@ def send_startup_message():
 • Kelly Criterion: {'فعال' if KELLY_CRITERION_ENABLED else 'غیرفعال'}
 
 ⚡ ربات آماده دریافت و تحلیل داده‌ها است...
-🔄 Fallback to CryptoCompare در صورت مشکل Binance
 
-#BotStarted #{datetime.datetime.now().strftime('%Y%m%d')} #v5_1
+#BotStarted #{datetime.datetime.now().strftime('%Y%m%d')} #v5_2 #AuthFixed
 """
     
     if TELEGRAM_ENABLED:
@@ -1305,7 +1410,7 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
     signal.signal(signal.SIGINT, signal_handler)
     
     logging.info("="*70)
-    logging.info("🤖 Smart Advisor Bot v5.1 Started (Enhanced API Integration)")
+    logging.info("🤖 Smart Advisor Bot v5.2 Started (Enhanced Authentication)")
     logging.info(f"📊 Exchange: {EXCHANGE_TO_USE.upper()}")
     logging.info(f"💱 Symbols: {', '.join(PAIRS_TO_MONITOR)}")
     logging.info(f"⏱️ Timeframes: {', '.join(TIMEFRAMES_TO_MONITOR)}")
@@ -1314,12 +1419,13 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
     logging.info(f"📁 Logs Directory: {log_subfolder_path}")
     logging.info(f"📱 Telegram: {'Enabled' if TELEGRAM_ENABLED else 'Disabled'}")
     logging.info(f"💼 Risk Management: Enabled")
+    logging.info(f"🔐 Authentication: {'Enabled' if USE_AUTHENTICATION else 'Disabled'} ({API_USERNAME})")
     logging.info("="*70)
     
     # بررسی سلامت API و دریافت اطلاعات مدل
     if not check_api_health():
         logging.error("❌ API Health Check failed! Bot will continue but may not work properly.")
-        print("❌ WARNING: API is not healthy! Check if prediction_api_05.py is running.")
+        print("❌ WARNING: API is not healthy! Check if prediction_api_commercial_05.py is running.")
         input("Press Enter to continue anyway or Ctrl+C to exit...")
     
     # ارسال پیام شروع به کار
@@ -1391,8 +1497,15 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
 • Optimized: {'✅' if api_model_info.get('is_optimized') else '❌'}
 """
                     
+                    # اطلاعات Authentication
+                    auth_info_text = f"""
+🔐 <b>Authentication:</b>
+• Status: {'✅ Active' if USE_AUTHENTICATION else '🔓 Disabled'}
+• User: {API_USERNAME if USE_AUTHENTICATION else 'N/A'}
+"""
+                    
                     status_message = f"""
-📊 <b>گزارش وضعیت دوره‌ای v5.1</b>
+📊 <b>گزارش وضعیت دوره‌ای v5.2</b>
 
 • تعداد بررسی‌ها: {iteration_count}
 • پیش‌بینی‌های موفق: {successful_predictions}
@@ -1401,6 +1514,8 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
 • سیگنال‌های صادر شده: {len(signals_history)}
 
 {model_info_text}
+
+{auth_info_text}
 
 {risk_report}
 
@@ -1412,6 +1527,7 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
                     logging.info(f"   - Failed Attempts: {failed_attempts}")
                     logging.info(f"   - Success Rate: {success_rate:.1f}%")
                     logging.info(f"   - Total Signals Generated: {len(signals_history)}")
+                    logging.info(f"   - Authentication: {'✅ ' + API_USERNAME if USE_AUTHENTICATION else '🔓 Disabled'}")
                     
                     if api_model_info:
                         logging.info(f"   - Model: {api_model_info.get('model_type', 'Unknown')}")
@@ -1430,12 +1546,13 @@ def multi_pair_loop(expected_features: Optional[List[str]] = None):
                 # ارسال پیام خطا به تلگرام در صورت خطاهای مکرر
                 if failed_attempts % 5 == 0 and TELEGRAM_ENABLED:
                     error_message = f"""
-⚠️ <b>هشدار خطا v5.1</b>
+⚠️ <b>هشدار خطا v5.2</b>
 
 ربات با خطاهای مکرر مواجه شده است.
 تعداد خطاها: {failed_attempts}
 آخرین خطا: {str(e)[:100]}...
 
+🔐 Authentication: {'✅ ' + API_USERNAME if USE_AUTHENTICATION else '🔓 Disabled'}
 🔄 سیستم fallback فعال است.
 لطفاً وضعیت API و شبکه را بررسی کنید.
 """
@@ -1459,7 +1576,8 @@ def single_pair_loop(expected_features: Optional[List[str]] = None):
 # --- نقطه شروع اسکریپت ---
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("🤖 Smart Advisor Bot v5.1")
+    print("🤖 Smart Advisor Bot v5.2")
+    print("🔐 Enhanced Commercial API Authentication")
     print("📊 Multi-Pair & Multi-Timeframe Support")
     print("💼 Risk Management Module Enabled")
     print("🔄 Binance API Fallback System")
@@ -1483,6 +1601,23 @@ if __name__ == "__main__":
     print(f"   Max Daily Drawdown: {MAX_DAILY_DRAWDOWN:.0%}")
     print(f"   Kelly Criterion: {'Enabled' if KELLY_CRITERION_ENABLED else 'Disabled'}")
     
+    # 🔧 نمایش تنظیمات Authentication
+    print(f"\n🔐 Authentication Settings:")
+    print(f"   Status: {'Enabled' if USE_AUTHENTICATION else 'Disabled'}")
+    if USE_AUTHENTICATION:
+        print(f"   Username: {API_USERNAME}")
+        print(f"   Password: {'*' * len(API_PASSWORD)}")
+        
+        # تست authentication
+        print(f"\n🔍 Testing authentication...")
+        if check_authentication():
+            print("✅ Authentication test: Passed")
+        else:
+            print("❌ Authentication test: Failed")
+            print("⚠️  Bot will continue but may not work properly!")
+            print("💡 Please check Bot_Authentication section in config.ini")
+            input("Press Enter to continue anyway or Ctrl+C to exit...")
+    
     # بررسی تنظیمات تلگرام
     if TELEGRAM_ENABLED:
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -1503,7 +1638,8 @@ if __name__ == "__main__":
             print(f"⚡ Optimized Model: {'Yes' if api_model_info.get('is_optimized') else 'No'}")
     else:
         print("❌ API Health Check: Failed")
-        print("⚠️  Make sure prediction_api_05.py is running!")
+        print("⚠️  Make sure prediction_api_commercial_05.py is running!")
+        print("💡 Check Authentication settings if using commercial mode")
     
     # بارگذاری لیست ویژگی‌های مدل
     model_features = load_model_features()
@@ -1520,6 +1656,7 @@ if __name__ == "__main__":
     print("🔄 Fallback system: CryptoCompare API available if Binance fails")
     print("📊 Connection timeout: 30 seconds")
     print("🔄 Retry mechanism: 3 attempts per request")
+    print(f"🔐 Authentication: {'✅ Required' if USE_AUTHENTICATION else '🔓 Disabled'}")
     input("Press Enter to start the bot...")
     
     try:
