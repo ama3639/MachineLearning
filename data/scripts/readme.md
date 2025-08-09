@@ -557,11 +557,6 @@ python prediction_api_commercial_05.py
 # این terminal را باز نگه دارید
 ```
 
-#### **مرحله 6: تست Commercial API**
-```bash
-python test_api_06.py
-# انتظار: ✅ All tests passed!
-```
 
 #### **مرحله 7: وب اپلیکیشن v1.3 (Terminal 2)**
 ```bash
