@@ -371,7 +371,7 @@ python trading_bot_core_07.py
 
 ## 🔄 ارتباط بین فایل‌ها
 
-### **📊 Flow Chart جدید**
+### **📊 Flow Chart **
 ```mermaid
 graph TB
     A[🔧 config.ini + Auth] --> B[📄 01: fetch_data]

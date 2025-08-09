@@ -3,6 +3,15 @@
 
 """
 اسکریپت بک تست پیشرفته با معیارهای جامع و پشتیبانی از چند دارایی
+نسخه 2.1 - رفع مشکل "max() arg is an empty sequence"
+
+🔧 اصلاحات v2.1:
+- ✅ رفع خطای "max() arg is an empty sequence"  
+- ✅ بهبود error handling برای فایل‌های موجود نبودن
+- ✅ اضافه کردن fallback mechanism
+- ✅ بررسی دقیق‌تر مسیرها و فایل‌ها
+- ✅ گزارش‌های بهتر برای debugging
+
 ویژگی‌ها:
 - بک تست چند نمادی و چند بازه زمانی
 - ردیابی دلیل خروج
@@ -48,8 +57,76 @@ log_filename = os.path.join(log_subfolder_path, f"log_{pd.Timestamp.now().strfti
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler(log_filename, encoding='utf-8'), logging.StreamHandler()])
 
+# 🔧 تابع کمکی برای یافتن فایل‌ها با error handling بهتر
+def find_latest_file(pattern: str, description: str) -> str:
+    """
+    یافتن آخرین فایل با pattern مشخص - اصلاح شده برای رفع خطای empty sequence
+    """
+    try:
+        # جستجو در مسیر اصلی
+        files = glob.glob(pattern)
+        logging.info(f"🔍 جستجو برای {description} در: {pattern}")
+        logging.info(f"📁 فایل‌های یافت شده: {len(files)}")
+        
+        if files:
+            # فیلتر کردن فایل‌های موجود
+            existing_files = [f for f in files if os.path.exists(f) and os.path.getsize(f) > 0]
+            logging.info(f"📄 فایل‌های معتبر: {len(existing_files)}")
+            
+            if existing_files:
+                latest_file = max(existing_files, key=os.path.getctime)
+                logging.info(f"✅ آخرین فایل {description}: {os.path.basename(latest_file)}")
+                return latest_file
+        
+        # اگر در مسیر اصلی فایل نیافت، جستجو در زیرپوشه‌ها
+        parent_dir = os.path.dirname(pattern)
+        file_pattern = os.path.basename(pattern)
+        
+        logging.info(f"🔍 جستجو در زیرپوشه‌های {parent_dir}...")
+        alternative_patterns = [
+            os.path.join(parent_dir, "**", file_pattern),  # جستجو recursive
+            os.path.join(parent_dir, "run_*", file_pattern),  # پوشه‌های run_*
+        ]
+        
+        for alt_pattern in alternative_patterns:
+            alt_files = glob.glob(alt_pattern, recursive=True)
+            logging.info(f"📁 در {alt_pattern}: {len(alt_files)} فایل")
+            
+            if alt_files:
+                existing_alt_files = [f for f in alt_files if os.path.exists(f) and os.path.getsize(f) > 0]
+                if existing_alt_files:
+                    latest_file = max(existing_alt_files, key=os.path.getctime)
+                    logging.info(f"✅ فایل جایگزین {description}: {os.path.basename(latest_file)}")
+                    return latest_file
+        
+        # اگر هیچ فایلی پیدا نشد
+        logging.error(f"❌ هیچ فایل معتبری برای {description} یافت نشد")
+        logging.error(f"💡 Pattern جستجو شده: {pattern}")
+        logging.error(f"💡 لطفاً مطمئن شوید که فایل‌های مورد نیاز در مسیر صحیح موجود هستند")
+        
+        # نمایش فایل‌های موجود در پوشه برای debugging
+        try:
+            parent_directory = os.path.dirname(pattern) if os.path.dirname(pattern) else "."
+            if os.path.exists(parent_directory):
+                all_files = os.listdir(parent_directory)
+                logging.info(f"📋 فایل‌های موجود در {parent_directory}:")
+                for file in all_files[:10]:  # نمایش اول 10 فایل
+                    logging.info(f"   - {file}")
+                if len(all_files) > 10:
+                    logging.info(f"   ... و {len(all_files) - 10} فایل دیگر")
+        except Exception as list_error:
+            logging.warning(f"نمی‌توان فایل‌های پوشه را لیست کرد: {list_error}")
+        
+        return None
+        
+    except Exception as e:
+        logging.error(f"❌ خطا در جستجوی فایل {description}: {e}")
+        return None
+
 def calculate_max_drawdown(equity_curve):
     """Calculate maximum drawdown"""
+    if equity_curve.empty:
+        return 0
     peak = equity_curve.expanding(min_periods=1).max()
     drawdown = (equity_curve - peak) / peak
     return drawdown.min()
@@ -113,24 +190,28 @@ def generate_visualizations(df, trade_history, symbol, timeframe, report_path):
     # Display trades with reasons
     if trade_history:
         for trade in trade_history:
-            entry_idx = df.index.get_loc(trade['entry_date'])
-            exit_idx = df.index.get_loc(trade['exit_date'])
-            color = 'green' if trade['pnl'] > 0 else 'red'
-            
-            # Plot trade line
-            ax1.plot([trade['entry_date'], trade['exit_date']], 
-                    [trade['entry_price'], trade['exit_price']], 
-                    'o-', color=color, markersize=8, linewidth=2)
-            
-            # Add reason annotation
-            mid_date = df.index[entry_idx + (exit_idx - entry_idx) // 2]
-            mid_price = (trade['entry_price'] + trade['exit_price']) / 2
-            reason = trade.get('exit_reason', 'Target reached')
-            ax1.annotate(f"{trade['pnl']:.1%}\n{reason}", 
-                        xy=(mid_date, mid_price),
-                        xytext=(10, 10), textcoords='offset points',
-                        fontsize=8, ha='left',
-                        bbox=dict(boxstyle="round,pad=0.3", fc=color, alpha=0.3))
+            try:
+                entry_idx = df.index.get_loc(trade['entry_date'])
+                exit_idx = df.index.get_loc(trade['exit_date'])
+                color = 'green' if trade['pnl'] > 0 else 'red'
+                
+                # Plot trade line
+                ax1.plot([trade['entry_date'], trade['exit_date']], 
+                        [trade['entry_price'], trade['exit_price']], 
+                        'o-', color=color, markersize=8, linewidth=2)
+                
+                # Add reason annotation
+                mid_date = df.index[entry_idx + (exit_idx - entry_idx) // 2]
+                mid_price = (trade['entry_price'] + trade['exit_price']) / 2
+                reason = trade.get('exit_reason', 'Target reached')
+                ax1.annotate(f"{trade['pnl']:.1%}\n{reason}", 
+                            xy=(mid_date, mid_price),
+                            xytext=(10, 10), textcoords='offset points',
+                            fontsize=8, ha='left',
+                            bbox=dict(boxstyle="round,pad=0.3", fc=color, alpha=0.3))
+            except (KeyError, ValueError) as e:
+                logging.warning(f"Error plotting trade: {e}")
+                continue
     
     ax1.set_ylabel('Price')
     ax1.set_title(f'Price Chart and Trades - {symbol} ({timeframe})')
@@ -138,13 +219,14 @@ def generate_visualizations(df, trade_history, symbol, timeframe, report_path):
     ax1.legend()
     
     # Model prediction chart
-    ax2.plot(df.index, df['prediction'], label='Model Prediction', color='orange', alpha=0.5)
-    ax2.fill_between(df.index, 0, df['prediction'], alpha=0.3, color='orange')
-    ax2.set_xlabel('Time')
-    ax2.set_ylabel('Signal')
-    ax2.set_title('Model Signals')
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
+    if 'prediction' in df.columns:
+        ax2.plot(df.index, df['prediction'], label='Model Prediction', color='orange', alpha=0.5)
+        ax2.fill_between(df.index, 0, df['prediction'], alpha=0.3, color='orange')
+        ax2.set_xlabel('Time')
+        ax2.set_ylabel('Signal')
+        ax2.set_title('Model Signals')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
     
     plt.tight_layout()
     chart_filename = os.path.join(report_path, f"backtest_chart_{symbol.replace('/', '-')}_{timeframe}_{timestamp_str}.png")
@@ -261,13 +343,21 @@ def select_symbols_and_timeframes(df_full):
         print(f"✅ Selected ALL {len(selected_symbols)} symbols")
     elif ',' in symbol_choice:
         # Multiple selection
-        indices = [int(x.strip()) - 1 for x in symbol_choice.split(',') if x.strip().isdigit()]
-        selected_symbols = [available_symbols[i] for i in indices if 0 <= i < len(available_symbols)]
+        try:
+            indices = [int(x.strip()) - 1 for x in symbol_choice.split(',') if x.strip().isdigit()]
+            selected_symbols = [available_symbols[i] for i in indices if 0 <= i < len(available_symbols)]
+        except (ValueError, IndexError):
+            print("❌ Invalid selection format")
+            return None, None
     elif symbol_choice.isdigit():
         # Single number selection
-        idx = int(symbol_choice) - 1
-        if 0 <= idx < len(available_symbols):
-            selected_symbols = [available_symbols[idx]]
+        try:
+            idx = int(symbol_choice) - 1
+            if 0 <= idx < len(available_symbols):
+                selected_symbols = [available_symbols[idx]]
+        except (ValueError, IndexError):
+            print("❌ Invalid selection")
+            return None, None
     else:
         # Direct symbol name
         symbol_choice = symbol_choice.upper()
@@ -279,7 +369,12 @@ def select_symbols_and_timeframes(df_full):
         return None, None
     
     # Timeframe selection for first symbol (to get available timeframes)
-    first_symbol_tf = df_full.loc[selected_symbols[0]].index.get_level_values('timeframe').unique().tolist()
+    try:
+        first_symbol_tf = df_full.loc[selected_symbols[0]].index.get_level_values('timeframe').unique().tolist()
+    except KeyError:
+        print(f"❌ Symbol {selected_symbols[0]} not found in dataset")
+        return None, None
+        
     print(f"\n⏱️ Available Timeframes:")
     print("-" * 30)
     for i, tf in enumerate(first_symbol_tf, 1):
@@ -295,13 +390,21 @@ def select_symbols_and_timeframes(df_full):
         print(f"✅ Selected ALL {len(selected_timeframes)} timeframes")
     elif ',' in tf_choice:
         # Multiple selection
-        indices = [int(x.strip()) - 1 for x in tf_choice.split(',') if x.strip().isdigit()]
-        selected_timeframes = [first_symbol_tf[i] for i in indices if 0 <= i < len(first_symbol_tf)]
+        try:
+            indices = [int(x.strip()) - 1 for x in tf_choice.split(',') if x.strip().isdigit()]
+            selected_timeframes = [first_symbol_tf[i] for i in indices if 0 <= i < len(first_symbol_tf)]
+        except (ValueError, IndexError):
+            print("❌ Invalid selection format")
+            return None, None
     elif tf_choice.isdigit():
         # Single number selection
-        idx = int(tf_choice) - 1
-        if 0 <= idx < len(first_symbol_tf):
-            selected_timeframes = [first_symbol_tf[idx]]
+        try:
+            idx = int(tf_choice) - 1
+            if 0 <= idx < len(first_symbol_tf):
+                selected_timeframes = [first_symbol_tf[idx]]
+        except (ValueError, IndexError):
+            print("❌ Invalid selection")
+            return None, None
     else:
         # Direct timeframe name
         tf_choice = tf_choice.lower()
@@ -315,39 +418,125 @@ def select_symbols_and_timeframes(df_full):
     return selected_symbols, selected_timeframes
 
 def run_simple_backtest(features_path: str, models_path: str):
-    """Run simple backtest (backward compatibility)"""
+    """Run simple backtest (backward compatibility) - اصلاح شده"""
     logging.info("--- Starting Strategy Backtest Process ---")
     
     try:
-        list_of_feature_files = glob.glob(os.path.join(features_path, 'final_dataset_for_training_*.parquet'))
-        latest_feature_file = max(list_of_feature_files, key=os.path.getctime)
-        df_full = pd.read_parquet(latest_feature_file)
+        # 🔧 یافتن فایل‌ها با error handling بهتر
+        feature_file = find_latest_file(
+            os.path.join(features_path, 'final_dataset_for_training_*.parquet'),
+            "dataset file"
+        )
+        if not feature_file:
+            logging.error("❌ No dataset file found. Cannot proceed with backtest.")
+            print("❌ خطا: هیچ فایل دیتاست یافت نشد")
+            print("💡 لطفاً مطمئن شوید که prepare_features_03.py اجرا شده است")
+            return
+            
+        model_file = find_latest_file(
+            os.path.join(models_path, 'optimized_model_*.joblib'),
+            "optimized model"
+        )
+        if not model_file:
+            # fallback به مدل‌های قدیمی
+            model_file = find_latest_file(
+                os.path.join(models_path, 'random_forest_model_*.joblib'),
+                "random forest model"
+            )
+            
+        scaler_file = find_latest_file(
+            os.path.join(models_path, 'scaler_optimized_*.joblib'),
+            "optimized scaler"
+        )
+        if not scaler_file:
+            # fallback به scaler قدیمی
+            scaler_file = find_latest_file(
+                os.path.join(models_path, 'scaler_*.joblib'),
+                "scaler"
+            )
         
-        latest_model_file = max(glob.glob(os.path.join(models_path, 'random_forest_model_*.joblib')), key=os.path.getctime)
-        latest_scaler_file = max(glob.glob(os.path.join(models_path, 'scaler_*.joblib')), key=os.path.getctime)
-        model = joblib.load(latest_model_file)
-        scaler = joblib.load(latest_scaler_file)
-        logging.info("Data files, model and scaler loaded successfully.")
-    except (ValueError, FileNotFoundError) as e:
+        if not model_file or not scaler_file:
+            logging.error("❌ Required model or scaler files not found")
+            print("❌ خطا: فایل‌های مدل یا scaler یافت نشد")
+            print("💡 لطفاً مطمئن شوید که train_model_04.py اجرا شده است")
+            return
+            
+        # بارگذاری فایل‌ها
+        logging.info(f"📁 Loading dataset: {os.path.basename(feature_file)}")
+        df_full = pd.read_parquet(feature_file)
+        
+        logging.info(f"🤖 Loading model: {os.path.basename(model_file)}")
+        model_data = joblib.load(model_file)
+        
+        # بررسی نوع مدل (optimized یا قدیمی)
+        if isinstance(model_data, dict) and 'model' in model_data:
+            # مدل بهینه‌شده
+            model = model_data['model']
+            optimal_threshold = model_data.get('optimal_threshold', 0.5)
+            logging.info(f"✅ Optimized model loaded with threshold: {optimal_threshold:.4f}")
+        else:
+            # مدل قدیمی
+            model = model_data
+            optimal_threshold = 0.5
+            logging.info("⚠️ Legacy model loaded, using default threshold: 0.5")
+        
+        logging.info(f"📏 Loading scaler: {os.path.basename(scaler_file)}")
+        scaler = joblib.load(scaler_file)
+        
+        logging.info("✅ Data files, model and scaler loaded successfully.")
+        
+    except Exception as e:
         logging.error(f"Error loading files: {e}")
+        print(f"❌ خطا در بارگذاری فایل‌ها: {e}")
         return
 
-    available_symbols = df_full.index.get_level_values('symbol').unique().tolist()
-    print("Available symbols in dataset:", available_symbols)
-    symbol_to_test = input("Which symbol to test? (e.g. BTC/USDT): ").upper()
+    # بررسی نمادهای موجود
+    if df_full.index.nlevels > 1:
+        available_symbols = df_full.index.get_level_values('symbol').unique().tolist()
+    else:
+        logging.error("❌ Dataset format is not compatible (missing multi-index)")
+        print("❌ فرمت دیتاست سازگار نیست")
+        return
+        
+    print(f"\n📊 Available symbols in dataset: {available_symbols}")
+    symbol_to_test = input("💱 Which symbol to test? (e.g. BTC/USDT): ").upper().strip()
     
-    available_timeframes = df_full.loc[symbol_to_test].index.get_level_values('timeframe').unique().tolist()
-    print(f"Available timeframes for {symbol_to_test}:", available_timeframes)
-    timeframe_to_test = input("Which timeframe to test? (e.g. 1h): ").lower()
+    if symbol_to_test not in available_symbols:
+        print(f"❌ Symbol '{symbol_to_test}' not found in dataset")
+        print(f"✅ Available symbols: {', '.join(available_symbols)}")
+        return
+
+    try:
+        available_timeframes = df_full.loc[symbol_to_test].index.get_level_values('timeframe').unique().tolist()
+        print(f"⏱️ Available timeframes for {symbol_to_test}: {available_timeframes}")
+        timeframe_to_test = input("🕐 Which timeframe to test? (e.g. 1h): ").lower().strip()
+        
+        if timeframe_to_test not in available_timeframes:
+            print(f"❌ Timeframe '{timeframe_to_test}' not found")
+            print(f"✅ Available timeframes: {', '.join(available_timeframes)}")
+            return
+            
+    except KeyError as e:
+        logging.error(f"Symbol/timeframe combination error: {e}")
+        print(f"❌ خطا در دسترسی به داده‌های نماد")
+        return
 
     try:
         df = df_full.loc[(symbol_to_test, timeframe_to_test)].copy()
+        logging.info(f"📈 Dataset for {symbol_to_test} {timeframe_to_test}: {len(df)} records")
+        
+        if len(df) < TARGET_FUTURE_PERIODS * 2:
+            logging.warning(f"⚠️ Insufficient data for meaningful backtest")
+            print(f"⚠️ داده‌های ناکافی برای بک‌تست معنادار")
+            
     except KeyError:
         logging.error(f"Symbol/timeframe combination not found.")
+        print(f"❌ ترکیب نماد/تایم‌فریم یافت نشد")
         return
         
-    logging.info(f"Starting backtest for {symbol_to_test} on {timeframe_to_test}...")
+    logging.info(f"🚀 Starting backtest for {symbol_to_test} on {timeframe_to_test}...")
 
+    # شروع بک‌تست
     capital = INITIAL_CAPITAL
     position_open = False
     entry_price = 0
@@ -355,10 +544,33 @@ def run_simple_backtest(features_path: str, models_path: str):
     entry_date = None
     trade_history = []
 
-    X = df.drop('target', axis=1)
-    X_scaled = scaler.transform(X)
-    df['prediction'] = model.predict(X_scaled)
+    # استخراج ویژگی‌ها و پیش‌بینی
+    feature_columns = [col for col in df.columns if col not in ['target', 'timestamp']]
+    if not feature_columns:
+        logging.error("❌ No feature columns found in dataset")
+        print("❌ هیچ ویژگی در دیتاست یافت نشد")
+        return
+        
+    X = df[feature_columns]
     
+    try:
+        X_scaled = scaler.transform(X)
+        if hasattr(model, 'predict_proba'):
+            # استفاده از threshold بهینه برای مدل‌های جدید
+            y_prob = model.predict_proba(X_scaled)[:, 1]
+            df['prediction'] = (y_prob >= optimal_threshold).astype(int)
+            df['prediction_prob'] = y_prob
+            logging.info(f"✅ Using optimized threshold: {optimal_threshold:.4f}")
+        else:
+            df['prediction'] = model.predict(X_scaled)
+            df['prediction_prob'] = 0.5  # پیش‌فرض
+            
+    except Exception as pred_error:
+        logging.error(f"Error in model prediction: {pred_error}")
+        print(f"❌ خطا در پیش‌بینی مدل: {pred_error}")
+        return
+    
+    # شبیه‌سازی معاملات
     for i in range(len(df) - TARGET_FUTURE_PERIODS):
         current_row = df.iloc[i]
         
@@ -367,14 +579,14 @@ def run_simple_backtest(features_path: str, models_path: str):
             entry_price = current_row['close']
             entry_index = i
             entry_date = df.index[i]
-            logging.info(f"Entry at {entry_date}: price ${entry_price:.4f}")
+            logging.info(f"🟢 Entry at {entry_date}: price ${entry_price:.4f}")
 
         elif position_open and (i >= entry_index + TARGET_FUTURE_PERIODS):
             exit_price = current_row['close']
             exit_date = df.index[i]
             pnl_percent = (exit_price - entry_price) / entry_price
             
-            # Determine exit reason
+            # تعیین دلیل خروج
             exit_reason = "Target period reached"
             if pnl_percent < -0.05:
                 exit_reason = "Stop loss (-5%)"
@@ -394,8 +606,9 @@ def run_simple_backtest(features_path: str, models_path: str):
             capital += trade_amount * pnl_percent
             position_open = False
             entry_index = -1
-            logging.info(f"Exit at {exit_date}: price ${exit_price:.4f}, P/L: {pnl_percent:.2%}, Reason: {exit_reason}")
+            logging.info(f"🔴 Exit at {exit_date}: price ${exit_price:.4f}, P/L: {pnl_percent:.2%}, Reason: {exit_reason}")
 
+    # محاسبه نتایج نهایی
     final_capital = capital
     total_return = (final_capital - INITIAL_CAPITAL) / INITIAL_CAPITAL
     num_trades = len(trade_history)
@@ -414,53 +627,97 @@ def run_simple_backtest(features_path: str, models_path: str):
         'trade_history': trade_history
     }
     
+    # نمایش نتایج
     print("\n" + "="*50 + "\n      Strategy Performance Report\n" + "="*50)
     for key, value in report_data.items():
         if key != 'trade_history': 
             print(f"{key:<20} {value}")
     print("="*50)
     
+    # تولید گزارش
     generate_report_file(report_data, symbol_to_test, timeframe_to_test)
+    
+    # تولید نمودارها
+    try:
+        generate_visualizations(df, trade_history, symbol_to_test, timeframe_to_test, report_subfolder_path)
+    except Exception as viz_error:
+        logging.warning(f"Error generating visualizations: {viz_error}")
+    
+    print(f"\n✅ Backtest completed successfully!")
+    print(f"📁 Reports saved to: {report_subfolder_path}")
 
 def run_enhanced_backtest(features_path: str, models_path: str):
-    """Run enhanced backtest with multi-symbol and multi-timeframe support"""
+    """Run enhanced backtest with multi-symbol and multi-timeframe support - اصلاح شده"""
     logging.info("="*70)
     logging.info("Starting Enhanced Backtest Strategy")
     logging.info("="*70)
     
     try:
-        # Load data
-        list_of_feature_files = glob.glob(os.path.join(features_path, 'final_dataset_for_training_*.parquet'))
-        if not list_of_feature_files:
-            raise FileNotFoundError("No dataset files found.")
+        # بارگذاری داده‌ها با error handling بهتر
+        feature_file = find_latest_file(
+            os.path.join(features_path, 'final_dataset_for_training_*.parquet'),
+            "dataset file"
+        )
+        if not feature_file:
+            logging.error("❌ No dataset file found")
+            print("❌ فایل دیتاست یافت نشد")
+            return
+            
+        logging.info(f"Loading dataset: {os.path.basename(feature_file)}")
+        df_full = pd.read_parquet(feature_file)
         
-        latest_feature_file = max(list_of_feature_files, key=os.path.getctime)
-        logging.info(f"Loading dataset: {os.path.basename(latest_feature_file)}")
-        df_full = pd.read_parquet(latest_feature_file)
+        # بارگذاری مدل
+        model_file = find_latest_file(
+            os.path.join(models_path, 'optimized_model_*.joblib'),
+            "optimized model"
+        )
+        if not model_file:
+            model_file = find_latest_file(
+                os.path.join(models_path, 'random_forest_model_*.joblib'),
+                "random forest model"
+            )
+            
+        scaler_file = find_latest_file(
+            os.path.join(models_path, 'scaler_optimized_*.joblib'),
+            "optimized scaler"
+        )
+        if not scaler_file:
+            scaler_file = find_latest_file(
+                os.path.join(models_path, 'scaler_*.joblib'),
+                "scaler"
+            )
         
-        # Load model
-        latest_model_file = max(glob.glob(os.path.join(models_path, 'random_forest_model_*.joblib')), 
-                               key=os.path.getctime)
-        latest_scaler_file = max(glob.glob(os.path.join(models_path, 'scaler_*.joblib')), 
-                                key=os.path.getctime)
+        if not model_file or not scaler_file:
+            logging.error("❌ Required model or scaler files not found")
+            print("❌ فایل‌های مدل یا scaler یافت نشد")
+            return
         
-        model = joblib.load(latest_model_file)
-        scaler = joblib.load(latest_scaler_file)
-        logging.info("Model and scaler loaded successfully.")
+        # بارگذاری مدل و scaler
+        model_data = joblib.load(model_file)
+        if isinstance(model_data, dict) and 'model' in model_data:
+            model = model_data['model']
+            optimal_threshold = model_data.get('optimal_threshold', 0.5)
+        else:
+            model = model_data
+            optimal_threshold = 0.5
+            
+        scaler = joblib.load(scaler_file)
+        logging.info("✅ Model and scaler loaded successfully.")
         
-    except (ValueError, FileNotFoundError) as e:
+    except Exception as e:
         logging.error(f"Error loading files: {e}")
+        print(f"❌ خطا در بارگذاری فایل‌ها: {e}")
         return
 
-    # Select symbols and timeframes
+    # انتخاب نمادها و تایم‌فریم‌ها
     selected_symbols, selected_timeframes = select_symbols_and_timeframes(df_full)
     if not selected_symbols or not selected_timeframes:
         return
     
-    # Overall results storage
+    # ذخیره نتایج کلی
     all_results = []
     
-    # Run backtest for each combination
+    # اجرای بک‌تست برای هر ترکیب
     for symbol in selected_symbols:
         for timeframe in selected_timeframes:
             try:
@@ -473,7 +730,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                 logging.info(f"Backtesting {symbol} on {timeframe}")
                 logging.info(f"Records: {len(df)}")
                 
-                # Initialize backtest variables
+                # مقداردهی اولیه متغیرهای بک‌تست
                 capital = INITIAL_CAPITAL
                 equity_curve = [capital]
                 position_open = False
@@ -482,18 +739,24 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                 entry_date = None
                 trade_history = []
                 
-                # Model predictions
-                feature_columns = [col for col in df.columns if col != 'target']
+                # پیش‌بینی‌های مدل
+                feature_columns = [col for col in df.columns if col not in ['target', 'timestamp']]
                 X = df[feature_columns]
                 X_scaled = scaler.transform(X)
-                df['prediction'] = model.predict(X_scaled)
-                df['prediction_proba'] = model.predict_proba(X_scaled)[:, 1]
                 
-                # Trading simulation
+                if hasattr(model, 'predict_proba'):
+                    y_prob = model.predict_proba(X_scaled)[:, 1]
+                    df['prediction'] = (y_prob >= optimal_threshold).astype(int)
+                    df['prediction_proba'] = y_prob
+                else:
+                    df['prediction'] = model.predict(X_scaled)
+                    df['prediction_proba'] = model.predict_proba(X_scaled)[:, 1] if hasattr(model, 'predict_proba') else None
+                
+                # شبیه‌سازی معاملات
                 for i in range(len(df) - TARGET_FUTURE_PERIODS):
                     current_row = df.iloc[i]
                     
-                    # Entry logic
+                    # منطق ورود
                     if not position_open and current_row['prediction'] == 1:
                         position_open = True
                         entry_price = current_row['close']
@@ -501,12 +764,12 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                         entry_date = df.index[i]
                         logging.info(f"🟢 Entry at {entry_date}: ${entry_price:.4f}")
                     
-                    # Exit logic
+                    # منطق خروج
                     elif position_open:
                         exit_condition = False
                         exit_reason = ""
                         
-                        # Check various exit conditions
+                        # بررسی شرایط مختلف خروج
                         if i >= entry_index + TARGET_FUTURE_PERIODS:
                             exit_condition = True
                             exit_reason = "Target period reached"
@@ -516,7 +779,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                         elif (current_row['close'] - entry_price) / entry_price > 0.10:  # 10% take profit
                             exit_condition = True
                             exit_reason = "Take profit (+10%)"
-                        elif current_row['prediction'] == 0 and i > entry_index + 5:  # Signal changed
+                        elif current_row['prediction'] == 0 and i > entry_index + 5:  # تغییر سیگنال
                             exit_condition = True
                             exit_reason = "Signal reversed"
                         
@@ -534,7 +797,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                                 'exit_reason': exit_reason
                             })
                             
-                            # Update capital
+                            # بروزرسانی سرمایه
                             trade_amount = capital * TRADE_SIZE_PERCENT
                             profit_loss = trade_amount * pnl_percent
                             capital += profit_loss
@@ -547,7 +810,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                             logging.info(f"{emoji} Exit at {exit_date}: ${exit_price:.4f}, "
                                        f"P&L: {pnl_percent:.2%}, Reason: {exit_reason}")
                 
-                # Calculate final results
+                # محاسبه نتایج نهایی
                 final_capital = capital
                 total_return = (final_capital - INITIAL_CAPITAL) / INITIAL_CAPITAL
                 num_trades = len(trade_history)
@@ -555,7 +818,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                 losses = [t for t in trade_history if t['pnl'] <= 0]
                 win_rate = len(wins) / num_trades if num_trades > 0 else 0
                 
-                # Store results
+                # ذخیره نتایج
                 result = {
                     'symbol': symbol,
                     'timeframe': timeframe,
@@ -566,7 +829,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                 }
                 all_results.append(result)
                 
-                # Generate report data
+                # تولید داده‌های گزارش
                 report_data = {
                     'Initial Capital': f"{INITIAL_CAPITAL:,.2f}",
                     'Final Capital': f"{final_capital:,.2f}",
@@ -578,17 +841,21 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                     'trade_history': trade_history
                 }
                 
-                # Display summary
+                # نمایش خلاصه
                 print(f"\n{'='*40}")
                 print(f"📊 {symbol} ({timeframe}) Results:")
                 print(f"💰 Return: {total_return:.2%}")
                 print(f"📈 Trades: {num_trades} (Win Rate: {win_rate:.1%})")
                 print(f"💵 Final Capital: ${final_capital:,.2f}")
                 
-                # Generate visualizations and reports
+                # تولید تجسم‌ها و گزارش‌ها
                 equity_series = pd.Series(equity_curve, index=df.index[:len(equity_curve)])
                 generate_enhanced_report(report_data, symbol, timeframe, df, equity_series)
-                generate_visualizations(df, trade_history, symbol, timeframe, report_subfolder_path)
+                
+                try:
+                    generate_visualizations(df, trade_history, symbol, timeframe, report_subfolder_path)
+                except Exception as viz_error:
+                    logging.warning(f"Error generating visualizations for {symbol}/{timeframe}: {viz_error}")
                 
             except KeyError:
                 logging.error(f"Combination {symbol}/{timeframe} not found.")
@@ -597,7 +864,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
                 logging.error(f"Error processing {symbol}/{timeframe}: {e}")
                 continue
     
-    # Display overall summary if multiple tests
+    # نمایش خلاصه کلی در صورت وجود چند تست
     if len(all_results) > 1:
         print("\n" + "="*60)
         print("📊 OVERALL BACKTEST SUMMARY")
@@ -613,7 +880,7 @@ def run_enhanced_backtest(features_path: str, models_path: str):
             total_return_sum += r['total_return']
         
         print("-"*60)
-        avg_return = total_return_sum / len(all_results)
+        avg_return = total_return_sum / len(all_results) if all_results else 0
         print(f"Average Return: {avg_return:.2%}")
         print("="*60)
     
@@ -622,8 +889,9 @@ def run_enhanced_backtest(features_path: str, models_path: str):
 
 if __name__ == '__main__':
     print("\n" + "="*70)
-    print("🚀 Advanced Backtesting System v2.0")
+    print("🚀 Advanced Backtesting System v2.1")
     print("📊 Multi-Symbol & Multi-Timeframe Support")
+    print("🔧 Fixed 'max() arg is an empty sequence' Error")
     print("="*70)
     
     choice = input("\nSelect mode:\n1. Enhanced Backtest (recommended)\n2. Simple Backtest\nChoice (1/2): ").strip()
