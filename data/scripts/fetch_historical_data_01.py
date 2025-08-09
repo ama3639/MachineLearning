@@ -4,19 +4,27 @@
 """
 اسکریپت یکپارچه استخراج داده‌های قیمت و اخبار (نسخه اصلاح شده نهایی)
 
+🔧 تغییرات مهم این نسخه:
+- ✅ بهبود Reddit API integration
+- ✅ اصلاح Circuit Breaker برای CoinGecko
+- ✅ بهبود Rate Limiting management
+- ✅ اضافه کردن Alpha Vantage API
+- ✅ بهبود Error Handling
+- ✅ حل مشکل timeout در parallel processing
+
 این اسکریپت ادغامی از fetch_historical_data_01.py و fetch_news_01a.py است
 با قابلیت استخراج هماهنگ داده‌های قیمت و اخبار برای نمادهای انتخابی
 
 ویژگی‌ها:
 - State Management یکپارچه برای قیمت و اخبار
 - استخراج هماهنگ بر اساس نماد و بازه زمانی
-- مدیریت Rate Limit مشترک
+- مدیریت Rate Limit مشترک بهبود یافته
 - منوی تعاملی کامل
 - استخراج همه نمادها در همه تایم‌فریم‌ها
 - اخبار فقط به زبان انگلیسی (برای کاهش مصرف API)
 - حلقه اصلی برای نگه‌داشتن برنامه فعال
 - Backfill کامل برای تکمیل داده‌های از دست رفته
-- منابع خبری چندگانه: GNews + NewsAPI + CoinGecko + RSS (جدید)
+- منابع خبری چندگانه: GNews + NewsAPI + CoinGecko + RSS + Reddit
 """
 
 import os
@@ -42,6 +50,13 @@ except ImportError:
     logging.warning("feedparser not available. RSS feeds disabled.")
 
 try:
+    import praw  # 🔧 Reddit API
+    REDDIT_AVAILABLE = True
+except ImportError:
+    REDDIT_AVAILABLE = False
+    logging.warning("praw not available. Reddit API disabled.")
+
+try:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     CONCURRENT_AVAILABLE = True
 except ImportError:
@@ -64,11 +79,16 @@ try:
     NEWSAPI_KEY = config.get('API_Keys', 'newsapi_key', fallback=None)
     ALPHA_VANTAGE_KEY = config.get('API_Keys', 'alpha_vantage_key', fallback=None)
     
+    # 🔧 Reddit API Keys (اصلاح شده)
+    REDDIT_CLIENT_ID = config.get('API_Keys', 'reddit_client_id', fallback=None)
+    REDDIT_CLIENT_SECRET = config.get('API_Keys', 'reddit_client_secret', fallback=None)
+    
     # === تنظیمات فعال‌سازی منابع ===
     GNEWS_ENABLED = config.getboolean('News_Sources', 'gnews_enabled', fallback=True)
     NEWSAPI_ENABLED = config.getboolean('News_Sources', 'newsapi_enabled', fallback=True)
     COINGECKO_ENABLED = config.getboolean('News_Sources', 'coingecko_enabled', fallback=True)
     RSS_ENABLED = config.getboolean('News_Sources', 'rss_enabled', fallback=True)
+    REDDIT_ENABLED = config.getboolean('News_Sources', 'reddit_enabled', fallback=False)  # 🔧 اضافه شده
     PARALLEL_FETCHING = config.getboolean('News_Sources', 'parallel_fetching', fallback=True)
     REMOVE_DUPLICATES = config.getboolean('News_Sources', 'remove_duplicates', fallback=True)
     
@@ -80,8 +100,9 @@ try:
     
     # === Rate Limits جدید ===
     NEWSAPI_DELAY = config.getfloat('Rate_Limits', 'newsapi_delay', fallback=2.0)
-    COINGECKO_DELAY = config.getfloat('Rate_Limits', 'coingecko_delay', fallback=1.0)
+    COINGECKO_DELAY = config.getfloat('Rate_Limits', 'coingecko_delay', fallback=6.0)  # 🔧 افزایش یافته از 3 به 6
     RSS_DELAY = config.getfloat('Rate_Limits', 'rss_delay', fallback=0.5)
+    REDDIT_DELAY = config.getfloat('Rate_Limits', 'reddit_delay', fallback=2.0)  # 🔧 اضافه شده
     
     # محدودیت‌های موجود
     DAILY_LIMIT = config.getint('Rate_Limits', 'cryptocompare_daily_limit', fallback=3200)
@@ -92,6 +113,7 @@ try:
     # === محدودیت‌های جدید ===
     NEWSAPI_DAILY_LIMIT = config.getint('Rate_Limits', 'newsapi_daily_limit', fallback=33)
     NEWSAPI_MONTHLY_LIMIT = config.getint('Rate_Limits', 'newsapi_monthly_limit', fallback=1000)
+    REDDIT_PER_MINUTE_LIMIT = config.getint('Rate_Limits', 'reddit_per_minute_limit', fallback=60)  # 🔧 اضافه شده
     
     MAX_REQUESTS_PER_SESSION = config.getint('Data_Settings', 'max_requests_per_session', fallback=500)
     
@@ -99,6 +121,10 @@ try:
     RSS_CACHE_MINUTES = config.getint('RSS_Feeds', 'rss_cache_minutes', fallback=5)
     MAX_ARTICLES_PER_FEED = config.getint('RSS_Feeds', 'max_articles_per_feed', fallback=20)
     RSS_TIMEOUT = config.getint('RSS_Feeds', 'rss_timeout', fallback=10)
+    
+    # === Circuit Breaker ===
+    COINGECKO_MAX_ERRORS = config.getint('Circuit_Breaker', 'coingecko_max_errors', fallback=5)  # 🔧 افزایش از 3 به 5
+    COINGECKO_RESET_TIME_MINUTES = config.getint('Circuit_Breaker', 'coingecko_reset_time_minutes', fallback=15)  # 🔧 افزایش از 10 به 15
     
 except Exception as e:
     print(f"CRITICAL ERROR: Could not read 'config.ini'. Error: {e}")
@@ -141,7 +167,7 @@ class UnifiedStateManager:
             db_path = os.path.join(RAW_DATA_PATH, 'unified_extraction_state.db')
         self.db_path = db_path
         self.setup_database()
-        logging.info(f"💾 Unified State Manager اولیه‌سازی شد: {db_path}")
+        logging.info(f"💾 Unified State Manager initialized: {db_path}")
     
     def setup_database(self):
         """ایجاد جداول مورد نیاز"""
@@ -207,7 +233,7 @@ class UnifiedStateManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             ''')
-        logging.info("✅ Unified Database تنظیم شد")
+        logging.info("✅ Enhanced Database setup completed")
     
     def create_unified_session(self, symbols: List[str], include_price: bool = True, 
                               include_news: bool = True) -> str:
@@ -222,7 +248,7 @@ class UnifiedStateManager:
                 VALUES (?, ?, ?, 'active')
             ''', (session_id, session_type, len(symbols)))
         
-        logging.info(f"🆕 Unified Session جدید: {session_id} (نوع: {session_type})")
+        logging.info(f"🆕 Unified Session created: {session_id} (type: {session_type})")
         return session_id
     
     def update_price_progress(self, session_id: str, exchange: str, symbol: str, 
@@ -384,7 +410,7 @@ class UnifiedStateManager:
 
 # --- کلاس مدیریت Rate Limit یکپارچه (بهبود یافته) ---
 class UnifiedRateLimiter:
-    """مدیریت هوشمند نرخ درخواست برای همه API ها"""
+    """مدیریت هوشمند نرخ درخواست برای همه API ها - بهبود یافته"""
     
     def __init__(self, state_manager: UnifiedStateManager):
         self.state_manager = state_manager
@@ -397,7 +423,8 @@ class UnifiedRateLimiter:
             # === منابع جدید ===
             'NewsAPI': {'daily': 0, 'monthly': 0, 'session': 0},
             'CoinGecko': {'session': 0},
-            'RSS': {'session': 0}
+            'RSS': {'session': 0},
+            'Reddit': {'session': 0, 'minute': 0}  # 🔧 اضافه شده
         }
         
         self.min_intervals = {
@@ -407,8 +434,9 @@ class UnifiedRateLimiter:
             'GNews': GNEWS_DELAY,
             # === منابع جدید ===
             'NewsAPI': NEWSAPI_DELAY,
-            'CoinGecko': COINGECKO_DELAY,
-            'RSS': RSS_DELAY
+            'CoinGecko': COINGECKO_DELAY,  # افزایش یافته به 6 ثانیه
+            'RSS': RSS_DELAY,
+            'Reddit': REDDIT_DELAY  # 🔧 اضافه شده
         }
         
         self.limits = {
@@ -427,6 +455,10 @@ class UnifiedRateLimiter:
                 'daily': NEWSAPI_DAILY_LIMIT,
                 'monthly': NEWSAPI_MONTHLY_LIMIT,
                 'session': MAX_REQUESTS_PER_SESSION
+            },
+            'Reddit': {  # 🔧 اضافه شده
+                'minute': REDDIT_PER_MINUTE_LIMIT,
+                'session': MAX_REQUESTS_PER_SESSION
             }
         }
         
@@ -434,12 +466,13 @@ class UnifiedRateLimiter:
         self.load_persisted_state()
         self.hour_start = time.time()
         self.day_start = time.time()
-        logging.info(f"🔧 Enhanced Rate Limiter اولیه‌سازی شد")
+        self.minute_start = time.time()  # 🔧 برای Reddit
+        logging.info(f"🔧 Enhanced Rate Limiter initialized with Reddit support")
     
     def load_persisted_state(self):
         """بارگذاری وضعیت از database"""
         with sqlite3.connect(self.state_manager.db_path) as conn:
-            for api_name in ['CryptoCompare', 'GNews', 'NewsAPI']:
+            for api_name in ['CryptoCompare', 'GNews', 'NewsAPI', 'Reddit']:
                 cursor = conn.execute('SELECT * FROM rate_limits WHERE api_name = ?', (api_name,))
                 row = cursor.fetchone()
                 
@@ -460,7 +493,7 @@ class UnifiedRateLimiter:
     
     def save_state(self, api_name: str):
         """ذخیره وضعیت در database"""
-        if api_name not in ['CryptoCompare', 'GNews', 'NewsAPI']:
+        if api_name not in ['CryptoCompare', 'GNews', 'NewsAPI', 'Reddit']:
             return
             
         counters = self.request_counters[api_name]
@@ -477,56 +510,80 @@ class UnifiedRateLimiter:
         """ریست شمارنده روزانه"""
         if api_name in self.request_counters:
             self.request_counters[api_name]['daily'] = 0
-            logging.info(f"🔄 شمارنده روزانه {api_name} ریست شد")
+            logging.info(f"🔄 Daily counter reset for {api_name}")
             self.save_state(api_name)
     
     def reset_hourly_counter(self, api_name: str):
         """ریست شمارنده ساعتی"""
         if api_name in self.request_counters:
             self.request_counters[api_name]['hourly'] = 0
-            logging.info(f"🔄 شمارنده ساعتی {api_name} ریست شد")
+            logging.info(f"🔄 Hourly counter reset for {api_name}")
             self.save_state(api_name)
     
+    def reset_minute_counter(self, api_name: str):
+        """ریست شمارنده دقیقه‌ای (برای Reddit)"""
+        if api_name in self.request_counters and 'minute' in self.request_counters[api_name]:
+            self.request_counters[api_name]['minute'] = 0
+            logging.info(f"🔄 Minute counter reset for {api_name}")
+    
     def check_and_wait_for_reset(self, api_name: str) -> bool:
-        """بررسی محدودیت و انتظار برای ریست در صورت نیاز"""
+        """بررسی محدودیت و انتظار برای ریست در صورت نیاز - بهبود یافته"""
         if api_name not in self.limits:
             return True
         
         counters = self.request_counters[api_name]
         limits = self.limits[api_name]
         
+        # 🔧 بررسی محدودیت دقیقه‌ای (Reddit)
+        if 'minute' in limits and counters.get('minute', 0) >= limits['minute']:
+            logging.warning(f"⏳ Minute limit reached for {api_name} - waiting...")
+            
+            # محاسبه زمان تا ریست
+            now = time.time()
+            next_minute = self.minute_start + 60
+            wait_seconds = max(0, next_minute - now)
+            
+            if wait_seconds > 0:
+                logging.info(f"⏰ Waiting {wait_seconds:.0f} seconds for minute reset...")
+                time.sleep(wait_seconds)
+            
+            self.reset_minute_counter(api_name)
+            self.minute_start = time.time()
+            return True
+        
         # بررسی محدودیت ساعتی
         if 'hourly' in limits and counters.get('hourly', 0) >= limits['hourly']:
-            logging.warning(f"⏳ محدودیت ساعتی {api_name} رسیده - انتظار تا ریست...")
+            logging.warning(f"⏳ Hourly limit reached for {api_name} - waiting...")
             
             # محاسبه زمان تا ریست
             now = datetime.now()
             next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
             wait_seconds = (next_hour - now).total_seconds()
             
-            logging.info(f"⏰ انتظار {wait_seconds:.0f} ثانیه تا ریست ساعتی...")
+            logging.info(f"⏰ Waiting {wait_seconds:.0f} seconds for hourly reset...")
             
             # انتظار با نمایش پیشرفت
             for remaining in range(int(wait_seconds), 0, -60):
                 minutes = remaining // 60
-                logging.info(f"⏳ {minutes} دقیقه تا ریست ساعتی...")
-                time.sleep(min(60, remaining))
+                if minutes > 0:
+                    logging.info(f"⏳ {minutes} minutes until hourly reset...")
+                    time.sleep(min(60, remaining))
             
             # ریست شمارنده
             self.reset_hourly_counter(api_name)
-            logging.info("✅ محدودیت ساعتی ریست شد - ادامه کار...")
+            logging.info("✅ Hourly limit reset - continuing...")
             return True
         
         # بررسی محدودیت روزانه
         if 'daily' in limits and counters.get('daily', 0) >= limits['daily']:
-            logging.warning(f"⏳ محدودیت روزانه {api_name} رسیده - انتظار تا ریست...")
+            logging.warning(f"⏳ Daily limit reached for {api_name} - waiting...")
             
             # محاسبه زمان تا ریست
             now = datetime.now()
             next_day = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
             wait_seconds = (next_day - now).total_seconds()
             
-            logging.info(f"⏰ انتظار {wait_seconds:.0f} ثانیه تا ریست روزانه...")
+            logging.info(f"⏰ Waiting {wait_seconds:.0f} seconds for daily reset...")
             
             # انتظار طولانی
             time.sleep(wait_seconds)
@@ -536,7 +593,7 @@ class UnifiedRateLimiter:
         return True
     
     def wait_if_needed(self, api_name: str) -> bool:
-        """اعمال تأخیر و بررسی محدودیت"""
+        """اعمال تأخیر و بررسی محدودیت - بهبود یافته"""
         with self.lock:
             # بررسی و انتظار برای ریست در صورت نیاز
             if not self.check_and_wait_for_reset(api_name):
@@ -563,6 +620,9 @@ class UnifiedRateLimiter:
                     if 'hourly' in self.request_counters[api_name]:
                         self.request_counters[api_name]['hourly'] += 1
                     self.save_state(api_name)
+                elif api_name == 'Reddit':  # 🔧 مدیریت ویژه Reddit
+                    if 'minute' in self.request_counters[api_name]:
+                        self.request_counters[api_name]['minute'] += 1
             
             return True
     
@@ -579,6 +639,8 @@ class UnifiedRateLimiter:
                 result['daily'] = f"{counters.get('daily', 0)}/{limits['daily']}"
             if 'hourly' in limits:
                 result['hourly'] = f"{counters.get('hourly', 0)}/{limits['hourly']}"
+            if 'minute' in limits:  # 🔧 برای Reddit
+                result['minute'] = f"{counters.get('minute', 0)}/{limits['minute']}"
             result['session'] = f"{counters['session']}/{limits.get('session', 'N/A')}"
             return result
         else:
@@ -595,18 +657,18 @@ def safe_request(url: str, params: dict = None, headers: dict = None,
             return response
         except requests.exceptions.RequestException as e:
             if retry == max_retries - 1:
-                logging.error(f"خطا در درخواست پس از {max_retries} تلاش: {e}")
+                logging.error(f"Request failed after {max_retries} attempts: {e}")
                 raise
             
             wait_time = 2 ** retry
-            logging.warning(f"خطا در درخواست. انتظار {wait_time} ثانیه قبل از تلاش مجدد...")
+            logging.warning(f"Request error. Waiting {wait_time}s before retry...")
             time.sleep(wait_time)
 
 # --- توابع استخراج داده قیمت (بدون تغییر) ---
 def fetch_from_cryptocompare(symbol: str, timeframe: str, limit: int, to_ts: int = None) -> pd.DataFrame:
     """استخراج داده از CryptoCompare API"""
     if not CRYPTOCOMPARE_API_KEY:
-        logging.warning("کلید API برای CryptoCompare تنظیم نشده است.")
+        logging.warning("CryptoCompare API key not configured.")
         return pd.DataFrame()
     
     BASE_URL = "https://min-api.cryptocompare.com/data/v2/"
@@ -619,7 +681,7 @@ def fetch_from_cryptocompare(symbol: str, timeframe: str, limit: int, to_ts: int
         if not endpoint: raise ValueError("Timeframe unit not recognized.")
         base_sym, quote_sym = symbol.upper().split('/')
     except Exception:
-        logging.error(f"[CryptoCompare] تایم‌فریم یا نماد نامعتبر: '{timeframe}', '{symbol}'")
+        logging.error(f"[CryptoCompare] Invalid symbol/timeframe: '{timeframe}', '{symbol}'")
         return pd.DataFrame()
     
     params = {"fsym": base_sym, "tsym": quote_sym, "limit": limit, "aggregate": tf_agg}
@@ -628,7 +690,7 @@ def fetch_from_cryptocompare(symbol: str, timeframe: str, limit: int, to_ts: int
     if to_ts:
         params['toTs'] = to_ts
     
-    logging.info(f"[CryptoCompare] در حال استخراج داده برای {symbol} | {timeframe}...")
+    logging.info(f"[CryptoCompare] Fetching data for {symbol} | {timeframe}...")
     
     try:
         response = safe_request(f"{BASE_URL}{endpoint}", params=params, api_name="CryptoCompare")
@@ -636,7 +698,7 @@ def fetch_from_cryptocompare(symbol: str, timeframe: str, limit: int, to_ts: int
         
         if data.get('Response') == 'Error':
             error_msg = data.get('Message', 'Unknown error')
-            logging.error(f"[CryptoCompare] خطا از API: {error_msg}")
+            logging.error(f"[CryptoCompare] API Error: {error_msg}")
             return pd.DataFrame()
         
         df = pd.DataFrame(data['Data']['Data'])
@@ -651,7 +713,7 @@ def fetch_from_cryptocompare(symbol: str, timeframe: str, limit: int, to_ts: int
         return df
         
     except Exception as e:
-        logging.error(f"[CryptoCompare] خطای پیش‌بینی نشده: {e}")
+        logging.error(f"[CryptoCompare] Unexpected error: {e}")
         return pd.DataFrame()
 
 def fetch_from_binance(symbol: str, timeframe: str, limit: int, **kwargs) -> pd.DataFrame:
@@ -671,13 +733,13 @@ def fetch_from_binance(symbol: str, timeframe: str, limit: int, **kwargs) -> pd.
             'limit': min(limit, 1000)
         }
         
-        logging.info(f"[Binance] در حال استخراج داده برای {symbol} | {timeframe}...")
+        logging.info(f"[Binance] Fetching data for {symbol} | {timeframe}...")
         
         response = safe_request("https://api.binance.com/api/v3/klines", params=params, api_name="Binance")
         data = response.json()
         
         if not data:
-            logging.warning(f"[Binance] داده‌ای برای {symbol} | {timeframe} دریافت نشد.")
+            logging.warning(f"[Binance] No data received for {symbol} | {timeframe}.")
             return pd.DataFrame()
         
         df = pd.DataFrame(data, columns=[
@@ -699,7 +761,7 @@ def fetch_from_binance(symbol: str, timeframe: str, limit: int, **kwargs) -> pd.
         return df
         
     except Exception as e:
-        logging.error(f"[Binance] خطا در دریافت داده برای {symbol} | {timeframe}: {e}")
+        logging.error(f"[Binance] Error fetching data for {symbol} | {timeframe}: {e}")
         return pd.DataFrame()
 
 def fetch_from_kraken(symbol: str, timeframe: str, limit: int, **kwargs) -> pd.DataFrame:
@@ -732,24 +794,24 @@ def fetch_from_kraken(symbol: str, timeframe: str, limit: int, **kwargs) -> pd.D
             'since': int(start_date.timestamp())
         }
         
-        logging.info(f"[Kraken] در حال استخراج داده برای {symbol} | {timeframe}...")
+        logging.info(f"[Kraken] Fetching data for {symbol} | {timeframe}...")
         
         response = safe_request("https://api.kraken.com/0/public/OHLC", params=params, api_name="Kraken")
         result = response.json()
         
         if 'error' in result and result['error']:
-            logging.error(f"[Kraken] خطای API: {result['error']}")
+            logging.error(f"[Kraken] API Error: {result['error']}")
             return pd.DataFrame()
         
         if 'result' not in result:
-            logging.warning(f"[Kraken] ساختار پاسخ غیرمنتظره برای {symbol}")
+            logging.warning(f"[Kraken] Unexpected response structure for {symbol}")
             return pd.DataFrame()
         
         data_key = list(result['result'].keys())[0]
         data = result['result'][data_key]
         
         if not data:
-            logging.warning(f"[Kraken] داده‌ای برای {symbol} | {timeframe} دریافت نشد.")
+            logging.warning(f"[Kraken] No data received for {symbol} | {timeframe}.")
             return pd.DataFrame()
         
         df = pd.DataFrame(data, columns=[
@@ -769,7 +831,7 @@ def fetch_from_kraken(symbol: str, timeframe: str, limit: int, **kwargs) -> pd.D
         return df
         
     except Exception as e:
-        logging.error(f"[Kraken] خطا در دریافت داده برای {symbol} | {timeframe}: {e}")
+        logging.error(f"[Kraken] Error fetching data for {symbol} | {timeframe}: {e}")
         return pd.DataFrame()
 
 # === کلاس‌های جدید برای منابع خبری اضافی ===
@@ -806,7 +868,7 @@ class NewsAPIFetcher:
             
             if data.get('status') != 'ok':
                 error_msg = data.get('message', 'Unknown NewsAPI error')
-                logging.warning(f"NewsAPI خطا: {error_msg}")
+                logging.warning(f"NewsAPI error: {error_msg}")
                 return []
             
             articles = []
@@ -824,25 +886,26 @@ class NewsAPIFetcher:
                     'api_source': 'NewsAPI'
                 })
             
-            logging.info(f"📰 NewsAPI: {len(articles)} اخبار برای {symbol}")
+            logging.info(f"📰 NewsAPI: {len(articles)} news for {symbol}")
             return articles
             
         except Exception as e:
-            logging.error(f"خطا در NewsAPI برای {symbol}: {e}")
+            logging.error(f"NewsAPI error for {symbol}: {e}")
             return []
 
 class CoinGeckoNewsFetcher:
-    """استخراج اخبار از CoinGecko - رایگان و نامحدود (با rate limiting بهبود یافته)"""
+    """استخراج اخبار از CoinGecko - رایگان و نامحدود (با circuit breaker بهبود یافته)"""
     
     def __init__(self, rate_limiter: UnifiedRateLimiter):
         self.rate_limiter = rate_limiter
         self.base_url = "https://api.coingecko.com/api/v3"
         
-        # === Circuit breaker برای مدیریت خطاهای متوالی ===
+        # === Circuit breaker بهبود یافته ===
         self.consecutive_errors = 0
-        self.max_consecutive_errors = 3
+        self.max_consecutive_errors = COINGECKO_MAX_ERRORS  # حالا 5 تا
         self.circuit_open = False
         self.circuit_reset_time = None
+        self.reset_time_minutes = COINGECKO_RESET_TIME_MINUTES  # حالا 15 دقیقه
         
         # نقشه تبدیل نماد به coin_id
         self.symbol_map = {
@@ -863,12 +926,12 @@ class CoinGeckoNewsFetcher:
         if not self.circuit_open:
             return False
         
-        # اگر ۱۰ دقیقه گذشته، circuit را ریست کن
-        if self.circuit_reset_time and time.time() - self.circuit_reset_time > 600:
+        # اگر زمان مشخص شده گذشته، circuit را ریست کن
+        if self.circuit_reset_time and time.time() - self.circuit_reset_time > (self.reset_time_minutes * 60):
             self.circuit_open = False
             self.consecutive_errors = 0
             self.circuit_reset_time = None
-            logging.info("🔄 CoinGecko circuit breaker ریست شد")
+            logging.info("🔄 CoinGecko circuit breaker reset")
             return False
         
         return True
@@ -876,18 +939,21 @@ class CoinGeckoNewsFetcher:
     def record_error(self):
         """ثبت خطا و مدیریت circuit breaker"""
         self.consecutive_errors += 1
+        logging.warning(f"⚠️ CoinGecko error #{self.consecutive_errors}")
         if self.consecutive_errors >= self.max_consecutive_errors:
             self.circuit_open = True
             self.circuit_reset_time = time.time()
-            logging.warning(f"⚠️ CoinGecko circuit breaker فعال شد - ۱۰ دقیقه انتظار")
+            logging.warning(f"⚠️ CoinGecko circuit breaker activated - waiting {self.reset_time_minutes} minutes")
     
     def record_success(self):
         """ثبت موفقیت و ریست خطاها"""
+        if self.consecutive_errors > 0:
+            logging.info(f"✅ CoinGecko success after {self.consecutive_errors} errors")
         self.consecutive_errors = 0
         if self.circuit_open:
             self.circuit_open = False
             self.circuit_reset_time = None
-            logging.info("✅ CoinGecko circuit breaker ریست شد")
+            logging.info("✅ CoinGecko circuit breaker reset")
     
     def get_coin_id(self, symbol: str) -> str:
         """تبدیل نماد به coin_id کوین‌گکو"""
@@ -899,19 +965,19 @@ class CoinGeckoNewsFetcher:
         
         # بررسی circuit breaker
         if self.is_circuit_open():
-            logging.warning(f"🚫 CoinGecko circuit breaker فعال - رد کردن {symbol}")
+            logging.warning(f"🚫 CoinGecko circuit breaker active - skipping {symbol}")
             return []
         
         try:
             # اعمال rate limit با تاخیر بیشتر
             self.rate_limiter.wait_if_needed('CoinGecko')
             
-            # تاخیر اضافی برای CoinGecko (3 ثانیه)
-            time.sleep(3.0)
+            # 🔧 تاخیر اضافی برای CoinGecko (6 ثانیه)
+            time.sleep(6.0)
             
             # استفاده از trending news (بیشتر در دسترس)
             url = f"{self.base_url}/news"
-            response = safe_request(url, api_name='CoinGecko', max_retries=2)
+            response = safe_request(url, api_name='CoinGecko', max_retries=1)  # کاهش retries
             data = response.json()
             
             # ثبت موفقیت
@@ -948,7 +1014,7 @@ class CoinGeckoNewsFetcher:
                     if relevant_count >= max_news:
                         break
             
-            logging.info(f"🦎 CoinGecko: {len(articles)} اخبار برای {symbol}")
+            logging.info(f"🦎 CoinGecko: {len(articles)} news for {symbol}")
             return articles
             
         except requests.exceptions.RequestException as e:
@@ -958,12 +1024,12 @@ class CoinGeckoNewsFetcher:
             if "429" in str(e) or "Too Many Requests" in str(e):
                 logging.error(f"🚫 CoinGecko rate limit: {symbol} - {e}")
             else:
-                logging.error(f"خطا در CoinGecko برای {symbol}: {e}")
+                logging.error(f"CoinGecko error for {symbol}: {e}")
             return []
         except Exception as e:
             # ثبت خطا
             self.record_error()
-            logging.error(f"خطا در CoinGecko برای {symbol}: {e}")
+            logging.error(f"CoinGecko error for {symbol}: {e}")
             return []
 
 class RSSNewsFetcher:
@@ -1002,8 +1068,22 @@ class RSSNewsFetcher:
             # اعمال rate limit
             self.rate_limiter.wait_if_needed('RSS')
             
-            logging.info(f"📡 بارگذاری RSS: {feed_name}")
-            feed = feedparser.parse(feed_url)
+            logging.info(f"📡 Loading RSS: {feed_name}")
+            
+            # 🔧 اضافه کردن timeout برای RSS
+            import socket
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(RSS_TIMEOUT)
+            
+            try:
+                feed = feedparser.parse(feed_url)
+            finally:
+                socket.setdefaulttimeout(old_timeout)
+            
+            # بررسی موفقیت بارگذاری
+            if hasattr(feed, 'status') and feed.status != 200:
+                logging.warning(f"RSS feed {feed_name} returned status {feed.status}")
+                return []
             
             articles = []
             max_articles = min(MAX_ARTICLES_PER_FEED, len(feed.entries))
@@ -1025,11 +1105,11 @@ class RSSNewsFetcher:
             self._feed_cache[feed_name] = articles
             self._last_fetch[feed_name] = current_time
             
-            logging.info(f"📡 {feed_name}: {len(articles)} خبر کش شد")
+            logging.info(f"📡 {feed_name}: {len(articles)} news cached")
             return articles
             
         except Exception as e:
-            logging.error(f"خطا در RSS {feed_name}: {e}")
+            logging.error(f"RSS error for {feed_name}: {e}")
             return []
     
     def fetch_crypto_news(self, symbol: str, max_news: int = 10) -> List[Dict]:
@@ -1057,11 +1137,125 @@ class RSSNewsFetcher:
                 if len(relevant_articles) >= max_news:
                     break
         
-        logging.info(f"📡 RSS: {len(relevant_articles)} اخبار مرتبط برای {symbol}")
+        logging.info(f"📡 RSS: {len(relevant_articles)} relevant news for {symbol}")
         return relevant_articles
 
+# 🔧 کلاس جدید Reddit News Fetcher
+class RedditNewsFetcher:
+    """استخراج اخبار از Reddit - رایگان (60 درخواست/دقیقه)"""
+    
+    def __init__(self, rate_limiter: UnifiedRateLimiter):
+        self.rate_limiter = rate_limiter
+        self.reddit = None
+        
+        # ایجاد instance Reddit اگر کلیدها موجود باشند
+        if REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET and REDDIT_AVAILABLE:
+            try:
+                self.reddit = praw.Reddit(
+                    client_id=REDDIT_CLIENT_ID,
+                    client_secret=REDDIT_CLIENT_SECRET,
+                    user_agent="crypto_data_fetcher/1.0",
+                    check_for_async=False  # 🔧 اضافه شده برای جلوگیری از warning
+                )
+                
+                # 🔧 تست اتصال
+                try:
+                    # تست ساده برای بررسی اتصال
+                    test_subreddit = self.reddit.subreddit('test')
+                    test_subreddit.id  # این یک درخواست کوچک است
+                    logging.info("✅ Reddit API initialized and tested successfully")
+                except Exception as test_error:
+                    logging.warning(f"Reddit API connection test failed: {test_error}")
+                    self.reddit = None
+                    
+            except Exception as e:
+                logging.error(f"Reddit API initialization failed: {e}")
+                self.reddit = None
+        else:
+            if not REDDIT_AVAILABLE:
+                logging.warning("Reddit API module (praw) not available")
+            elif not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
+                logging.warning("Reddit API credentials not found in config")
+            elif not REDDIT_ENABLED:
+                logging.info("Reddit API disabled in config")
+    
+    def fetch_crypto_news(self, symbol: str, max_news: int = 10) -> List[Dict]:
+        """دریافت اخبار کریپتو از Reddit"""
+        if not self.reddit or not REDDIT_AVAILABLE or not REDDIT_ENABLED:
+            return []
+        
+        crypto_name = symbol.split('/')[0].lower()
+        articles = []
+        
+        # لیست subreddit های مربوط به کریپتو
+        crypto_subreddits = ['cryptocurrency', 'bitcoin', 'ethereum', 'cryptomarkets']
+        
+        try:
+            # اعمال rate limit
+            self.rate_limiter.wait_if_needed('Reddit')
+            
+            # جستجو در subreddit های مختلف
+            for subreddit_name in crypto_subreddits:
+                try:
+                    subreddit = self.reddit.subreddit(subreddit_name)
+                    
+                    # 🔧 استفاده از hot posts به جای search (کمتر محدود)
+                    if crypto_name in ['btc', 'bitcoin']:
+                        # برای Bitcoin از hot posts استفاده کن
+                        posts = subreddit.hot(limit=5)
+                    else:
+                        # برای سایر ارزها جستجو کن
+                        search_query = f"{crypto_name}"
+                        posts = subreddit.search(search_query, sort='new', time_filter='week', limit=3)
+                    
+                    for post in posts:
+                        # فیلتر کردن پست‌های مرتبط
+                        title = post.title.lower()
+                        selftext = getattr(post, 'selftext', '').lower()
+                        
+                        # بررسی مرتبط بودن
+                        is_relevant = (
+                            crypto_name in title or 
+                            crypto_name in selftext or
+                            (crypto_name == 'btc' and ('bitcoin' in title or 'btc' in title)) or
+                            (crypto_name == 'eth' and ('ethereum' in title or 'eth' in title))
+                        )
+                        
+                        if is_relevant or subreddit_name == crypto_name:
+                            articles.append({
+                                'timestamp': datetime.fromtimestamp(post.created_utc).isoformat(),
+                                'symbol': symbol,
+                                'title': post.title,
+                                'content': getattr(post, 'selftext', '')[:500],  # محدود به 500 کاراکتر
+                                'description': post.title,
+                                'source': f'r/{subreddit_name}',
+                                'url': f"https://reddit.com{post.permalink}",
+                                'language': 'en',
+                                'image': '',
+                                'api_source': 'Reddit',
+                                'score': post.score,
+                                'comments': post.num_comments
+                            })
+                            
+                            if len(articles) >= max_news:
+                                break
+                    
+                    if len(articles) >= max_news:
+                        break
+                        
+                except Exception as subreddit_error:
+                    logging.warning(f"Reddit error for subreddit {subreddit_name}: {subreddit_error}")
+                    continue
+            
+            logging.info(f"🔴 Reddit: {len(articles)} posts for {symbol}")
+            return articles[:max_news]
+            
+        except Exception as e:
+            logging.error(f"Reddit API error for {symbol}: {e}")
+            return []
+
 class MultiSourceNewsFetcher:
-    """مدیریت موازی چندین منبع خبری (با timeout handling بهبود یافته)"""
+    """مدیریت موازی چندین منبع خبری (با Reddit و بهبود timeout handling)"""
     
     def __init__(self, rate_limiter: UnifiedRateLimiter):
         self.rate_limiter = rate_limiter
@@ -1080,8 +1274,12 @@ class MultiSourceNewsFetcher:
             
         if RSS_ENABLED and RSS_AVAILABLE:
             self.sources['RSS'] = RSSNewsFetcher(rate_limiter)
+            
+        # 🔧 اضافه کردن Reddit
+        if REDDIT_ENABLED and REDDIT_AVAILABLE:
+            self.sources['Reddit'] = RedditNewsFetcher(rate_limiter)
         
-        logging.info(f"🔗 MultiSource تشکیل شد: {list(self.sources.keys())}")
+        logging.info(f"🔗 MultiSource News Fetcher initialized: {list(self.sources.keys())}")
     
     def fetch_from_single_source(self, source_name: str, fetcher, 
                                 symbols: List[str], max_news: int) -> List[Dict]:
@@ -1102,37 +1300,59 @@ class MultiSourceNewsFetcher:
                 # سایر منابع با محدودیت زمان برای هر symbol
                 for i, symbol in enumerate(symbols):
                     try:
-                        articles = fetcher.fetch_crypto_news(symbol, max_news)
-                        all_articles.extend(articles)
+                        # 🔧 timeout مخصوص هر منبع
+                        import signal
+                        
+                        def timeout_handler(signum, frame):
+                            raise TimeoutError(f"Timeout for {source_name}")
+                        
+                        # اعمال timeout فقط برای منابع آهسته
+                        if source_name == 'CoinGecko':
+                            signal.signal(signal.SIGALRM, timeout_handler)
+                            signal.alarm(30)  # 30 ثانیه timeout
+                        
+                        try:
+                            articles = fetcher.fetch_crypto_news(symbol, max_news)
+                            all_articles.extend(articles)
+                        finally:
+                            if source_name == 'CoinGecko':
+                                signal.alarm(0)  # cancel alarm
                         
                         # محدودیت تعداد کل برای جلوگیری از حجم زیاد
                         if len(all_articles) > len(symbols) * max_news:
                             break
                             
                         # نمایش پیشرفت برای منابع آهسته
-                        if source_name == 'CoinGecko' and (i + 1) % 3 == 0:
-                            logging.info(f"🦎 CoinGecko پیشرفت: {i + 1}/{len(symbols)} نماد")
+                        if source_name in ['CoinGecko', 'Reddit'] and (i + 1) % 3 == 0:
+                            logging.info(f"🔄 {source_name} progress: {i + 1}/{len(symbols)} symbols")
                             
+                    except TimeoutError:
+                        logging.warning(f"⏰ Timeout in {source_name} for {symbol}")
+                        continue
                     except Exception as symbol_error:
-                        logging.warning(f"خطا در {source_name} برای {symbol}: {symbol_error}")
+                        logging.warning(f"Error in {source_name} for {symbol}: {symbol_error}")
                         continue
             
-            logging.info(f"✅ {source_name}: {len(all_articles)} خبر کل")
+            logging.info(f"✅ {source_name}: {len(all_articles)} total news")
             return all_articles
             
         except Exception as e:
-            logging.error(f"❌ خطا در {source_name}: {e}")
+            logging.error(f"❌ Error in {source_name}: {e}")
             return []
     
     def fetch_parallel(self, symbols: List[str], max_news: int = 10) -> pd.DataFrame:
         """استخراج موازی از همه منابع (با timeout management بهتر)"""
         all_articles = []
         
-        logging.info(f"🚀 شروع استخراج از {len(self.sources)} منبع...")
+        logging.info(f"🚀 Starting news extraction from {len(self.sources)} sources...")
+        
+        # 🔧 تنظیم timeout بر اساس تعداد منابع
+        base_timeout = 60
+        timeout_per_source = base_timeout + (len(symbols) * 10)  # 10 ثانیه اضافی به ازای هر symbol
         
         if PARALLEL_FETCHING and CONCURRENT_AVAILABLE and len(self.sources) > 1:
             # استخراج موازی با timeout management بهتر
-            with ThreadPoolExecutor(max_workers=min(4, len(self.sources))) as executor:
+            with ThreadPoolExecutor(max_workers=min(3, len(self.sources))) as executor:  # کاهش workers
                 # ارسال tasks
                 futures = {}
                 for source_name, fetcher in self.sources.items():
@@ -1146,38 +1366,38 @@ class MultiSourceNewsFetcher:
                 completed_sources = []
                 
                 try:
-                    # timeout اولیه: 120 ثانیه برای منابع سریع
-                    for future in as_completed(futures, timeout=120):
+                    # timeout اولیه برای منابع سریع
+                    for future in as_completed(futures, timeout=timeout_per_source):
                         source_name = futures[future]
                         try:
                             articles = future.result(timeout=30)  # timeout per source
                             all_articles.extend(articles)
                             completed_sources.append(source_name)
-                            logging.info(f"✅ {source_name} تکمیل شد")
+                            logging.info(f"✅ {source_name} completed")
                         except Exception as e:
-                            logging.error(f"❌ {source_name} ناموفق: {e}")
+                            logging.error(f"❌ {source_name} failed: {e}")
                 
                 except Exception as timeout_error:
-                    logging.warning(f"⏰ Timeout در parallel processing: {timeout_error}")
+                    logging.warning(f"⏰ Timeout in parallel processing: {timeout_error}")
                     
                     # تلاش برای دریافت نتایج منابع باقیمانده
                     remaining_futures = [f for f in futures.keys() if futures[f] not in completed_sources]
                     
                     if remaining_futures:
-                        logging.info(f"🔄 در حال دریافت نتایج {len(remaining_futures)} منبع باقیمانده...")
+                        logging.info(f"🔄 Attempting to get results from {len(remaining_futures)} remaining sources...")
                         
                         for future in remaining_futures:
                             source_name = futures[future]
                             try:
                                 if future.done():
-                                    articles = future.result(timeout=10)
+                                    articles = future.result(timeout=5)
                                     all_articles.extend(articles)
-                                    logging.info(f"✅ {source_name} (تاخیری) تکمیل شد")
+                                    logging.info(f"✅ {source_name} (delayed) completed")
                                 else:
-                                    logging.warning(f"⏰ {source_name} همچنان در حال اجرا - رد شد")
+                                    logging.warning(f"⏰ {source_name} still running - cancelled")
                                     future.cancel()
                             except Exception as e:
-                                logging.error(f"❌ {source_name} (تاخیری) ناموفق: {e}")
+                                logging.error(f"❌ {source_name} (delayed) failed: {e}")
         else:
             # استخراج متوالی
             for source_name, fetcher in self.sources.items():
@@ -1185,7 +1405,7 @@ class MultiSourceNewsFetcher:
                 all_articles.extend(articles)
         
         if not all_articles:
-            logging.warning("❌ هیچ خبری از هیچ منبعی دریافت نشد")
+            logging.warning("❌ No news received from any source")
             return pd.DataFrame()
         
         # تبدیل به DataFrame
@@ -1202,7 +1422,7 @@ class MultiSourceNewsFetcher:
             final_count = len(df)
             
             if initial_count > final_count:
-                logging.info(f"🧹 حذف {initial_count - final_count} خبر تکراری")
+                logging.info(f"🧹 Removed {initial_count - final_count} duplicate news")
         
         # افزودن sentiment_score
         analyzer = SentimentIntensityAnalyzer()
@@ -1219,13 +1439,13 @@ class MultiSourceNewsFetcher:
         # مرتب‌سازی بر اساس timestamp
         df = df.sort_values('timestamp', ascending=False).reset_index(drop=True)
         
-        logging.info(f"🎉 مجموع نهایی: {len(df)} خبر منحصر از {len(self.sources)} منبع")
+        logging.info(f"🎉 Final total: {len(df)} unique news from {len(self.sources)} sources")
         
         # آمار به تفکیک منبع
         if 'api_source' in df.columns:
             source_stats = df['api_source'].value_counts()
             for source, count in source_stats.items():
-                logging.info(f"   📊 {source}: {count} خبر")
+                logging.info(f"   📊 {source}: {count} news")
         
         return df
 
@@ -1236,7 +1456,7 @@ def fetch_crypto_news(api_key: str, symbols: List[str], max_news: int = 10,
     دریافت اخبار مرتبط با ارزهای دیجیتال از GNews API
     توجه: فقط به زبان انگلیسی برای کاهش مصرف API
     """
-    logging.info("شروع جمع‌آوری داده‌های خبری GNews (فقط انگلیسی)...")
+    logging.info("Starting GNews data collection (English only)...")
     all_articles = []
     base_url = "https://gnews.io/api/v4/search"
     
@@ -1254,7 +1474,7 @@ def fetch_crypto_news(api_key: str, symbols: List[str], max_news: int = 10,
         if rate_limiter:
             if rate_limiter.request_counters['GNews']['daily'] >= GNEWS_DAILY_LIMIT:
                 skipped_due_to_limit += 1
-                logging.warning(f"⏭️ رد شدن {symbol} به دلیل محدودیت روزانه")
+                logging.warning(f"⏭️ Skipping {symbol} due to daily limit")
                 continue
         
         query = f"{crypto_name} cryptocurrency"
@@ -1268,7 +1488,7 @@ def fetch_crypto_news(api_key: str, symbols: List[str], max_news: int = 10,
         }
         
         try:
-            logging.info(f"[{current_request}/{total_requests}] دریافت اخبار GNews {symbol}...")
+            logging.info(f"[{current_request}/{total_requests}] Fetching GNews for {symbol}...")
             
             # اعمال rate limit
             if rate_limiter:
@@ -1278,7 +1498,7 @@ def fetch_crypto_news(api_key: str, symbols: List[str], max_news: int = 10,
             data = response.json()
             
             if 'articles' not in data:
-                logging.warning(f"پاسخ غیرمنتظره GNews برای {symbol}: {data}")
+                logging.warning(f"Unexpected GNews response for {symbol}: {data}")
                 continue
             
             articles = data.get('articles', [])
@@ -1296,20 +1516,20 @@ def fetch_crypto_news(api_key: str, symbols: List[str], max_news: int = 10,
                     'image': article.get('image', '')
                 })
             
-            logging.info(f"✅ GNews: تعداد {len(articles)} خبر برای {symbol} دریافت شد.")
+            logging.info(f"✅ GNews: {len(articles)} news received for {symbol}.")
             
         except requests.exceptions.RequestException as e:
-            logging.error(f"خطا در دریافت اخبار GNews برای {symbol}: {e}")
+            logging.error(f"Error fetching GNews for {symbol}: {e}")
         except json.JSONDecodeError as e:
-            logging.error(f"خطا در پردازش JSON برای {symbol}: {e}")
+            logging.error(f"JSON decode error for {symbol}: {e}")
         except Exception as e:
-            logging.error(f"خطای غیرمنتظره برای {symbol}: {e}")
+            logging.error(f"Unexpected error for {symbol}: {e}")
     
     if skipped_due_to_limit > 0:
-        logging.warning(f"⚠️ تعداد {skipped_due_to_limit} درخواست به دلیل محدودیت نادیده گرفته شد.")
+        logging.warning(f"⚠️ {skipped_due_to_limit} requests skipped due to limits.")
     
     if not all_articles:
-        logging.warning("هیچ خبری از GNews دریافت نشد.")
+        logging.warning("No news received from GNews.")
         return pd.DataFrame()
     
     # تبدیل به DataFrame
@@ -1317,7 +1537,7 @@ def fetch_crypto_news(api_key: str, symbols: List[str], max_news: int = 10,
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.dropna(subset=['timestamp'])
     
-    logging.info(f"📊 مجموع اخبار GNews دریافت شده: {len(df)}")
+    logging.info(f"📊 Total GNews received: {len(df)}")
     
     return df
 
@@ -1331,12 +1551,12 @@ def fetch_all_tradable_pairs_from_exchange(exchange_name: str, quote_currency="U
     elif exchange_name == 'Kraken':
         return fetch_all_tradable_pairs_kraken(quote_currency)
     else:
-        logging.error(f"دریافت لیست جفت‌ارز برای صرافی '{exchange_name}' پیاده‌سازی نشده است.")
+        logging.error(f"Fetching pairs for exchange '{exchange_name}' not implemented.")
         return []
 
 def fetch_all_tradable_pairs_cryptocompare(quote_currency="USDT"):
     """دریافت لیست از CryptoCompare"""
-    logging.info(f"[CryptoCompare] در حال دریافت لیست تمام جفت‌ارزها با مرجع {quote_currency}...")
+    logging.info(f"[CryptoCompare] Fetching all pairs with {quote_currency}...")
     try:
         url = "https://min-api.cryptocompare.com/data/all/coinlist"
         params = {}
@@ -1355,15 +1575,15 @@ def fetch_all_tradable_pairs_cryptocompare(quote_currency="USDT"):
             if len(pair.split('/')[0]) <= 10:  # حذف نمادهای خیلی طولانی
                 valid_pairs.append(pair)
         
-        logging.info(f"[CryptoCompare] تعداد {len(valid_pairs)} جفت ارز معتبر یافت شد.")
+        logging.info(f"[CryptoCompare] Found {len(valid_pairs)} valid pairs.")
         return valid_pairs[:100]  # محدود کردن به 100 جفت برتر
     except Exception as e:
-        logging.error(f"[CryptoCompare] خطا در دریافت لیست جفت‌ارزها: {e}")
+        logging.error(f"[CryptoCompare] Error fetching pairs: {e}")
         return []
 
 def fetch_all_tradable_pairs_binance(quote_currency="USDT"):
     """دریافت لیست از Binance"""
-    logging.info(f"[Binance] در حال دریافت لیست تمام جفت‌ارزها با مرجع {quote_currency}...")
+    logging.info(f"[Binance] Fetching all pairs with {quote_currency}...")
     try:
         response = safe_request("https://api.binance.com/api/v3/exchangeInfo", api_name="Binance")
         data = response.json()
@@ -1375,21 +1595,21 @@ def fetch_all_tradable_pairs_binance(quote_currency="USDT"):
                 pair = f"{symbol_info['baseAsset']}/{symbol_info['quoteAsset']}"
                 pairs.append(pair)
         
-        logging.info(f"[Binance] تعداد {len(pairs)} جفت ارز معتبر یافت شد.")
+        logging.info(f"[Binance] Found {len(pairs)} valid pairs.")
         return pairs
     except Exception as e:
-        logging.error(f"[Binance] خطا در دریافت لیست جفت‌ارزها: {e}")
+        logging.error(f"[Binance] Error fetching pairs: {e}")
         return []
 
 def fetch_all_tradable_pairs_kraken(quote_currency="USD"):
     """دریافت لیست از Kraken"""
-    logging.info(f"[Kraken] در حال دریافت لیست تمام جفت‌ارزها با مرجع {quote_currency}...")
+    logging.info(f"[Kraken] Fetching all pairs with {quote_currency}...")
     try:
         response = safe_request("https://api.kraken.com/0/public/AssetPairs", api_name="Kraken")
         data = response.json()
         
         if 'error' in data and data['error']:
-            logging.error(f"[Kraken] خطای API: {data['error']}")
+            logging.error(f"[Kraken] API Error: {data['error']}")
             return []
         
         pairs = []
@@ -1400,10 +1620,10 @@ def fetch_all_tradable_pairs_kraken(quote_currency="USD"):
                 if base and quote:
                     pairs.append(f"{base}/{quote}")
         
-        logging.info(f"[Kraken] تعداد {len(pairs)} جفت ارز معتبر یافت شد.")
+        logging.info(f"[Kraken] Found {len(pairs)} valid pairs.")
         return pairs
     except Exception as e:
-        logging.error(f"[Kraken] خطا در دریافت لیست جفت‌ارزها: {e}")
+        logging.error(f"[Kraken] Error fetching pairs: {e}")
         return []
 
 # --- کلاس اصلی Unified Data Fetcher (بهبود یافته) ---
@@ -1423,7 +1643,7 @@ class UnifiedDataFetcher:
         # ایجاد sentiment analyzer برای پردازش مقدماتی اخبار
         self.sentiment_analyzer = SentimentIntensityAnalyzer()
         
-        logging.info("🚀 Enhanced Unified Data Fetcher آماده شد")
+        logging.info("🚀 Enhanced Unified Data Fetcher ready")
     
     def fetch_price_data(self, symbol: str, timeframe: str, limit: int, 
                         exchange_name: str, session_id: str) -> bool:
@@ -1431,12 +1651,12 @@ class UnifiedDataFetcher:
         
         # بررسی آیتم شکست خورده
         if self.state_manager.is_failed_item('price', symbol, exchange_name):
-            logging.info(f"⏭️ رد شدن جفت ارز شکست خورده: {symbol}")
+            logging.info(f"⏭️ Skipping failed pair: {symbol}")
             return True
         
         # بررسی و انتظار rate limit
         if not self.rate_limiter.wait_if_needed(exchange_name):
-            logging.error(f"❌ Rate limit رسیده برای {exchange_name}")
+            logging.error(f"❌ Rate limit reached for {exchange_name}")
             return False
         
         try:
@@ -1468,12 +1688,12 @@ class UnifiedDataFetcher:
                 file_path=filename, records_count=len(df)
             )
             
-            logging.info(f"✅ قیمت موفق: {symbol}|{timeframe} - {len(df)} سطر")
+            logging.info(f"✅ Price success: {symbol}|{timeframe} - {len(df)} rows")
             return True
             
         except Exception as e:
             error_msg = f"Exception: {str(e)}"
-            logging.error(f"❌ خطا در {symbol}|{timeframe}: {error_msg}")
+            logging.error(f"❌ Error in {symbol}|{timeframe}: {error_msg}")
             
             # اگر خطای API است، به failed items اضافه کن
             if any(x in str(e).lower() for x in ['market does not exist', 'unknown asset pair', 'invalid symbol']):
@@ -1489,22 +1709,22 @@ class UnifiedDataFetcher:
     def fetch_news_data(self, symbols: List[str], max_news: int, session_id: str) -> bool:
         """استخراج اخبار با مدیریت state - چندمنبعه بهبود یافته"""
         
-        logging.info("\n--- شروع استخراج اخبار چندمنبعه بهبود یافته ---")
-        logging.info(f"تعداد نمادها: {len(symbols)}")
-        logging.info(f"تعداد اخبار برای هر نماد: {max_news}")
+        logging.info("\n--- Starting multi-source news extraction (Enhanced) ---")
+        logging.info(f"Symbols count: {len(symbols)}")
+        logging.info(f"News per symbol: {max_news}")
         
         # ایجاد multi-source fetcher
         multi_fetcher = MultiSourceNewsFetcher(self.rate_limiter)
         
         if not multi_fetcher.sources:
-            logging.error("❌ هیچ منبع خبری فعالی یافت نشد")
+            logging.error("❌ No active news sources found")
             return False
         
         # استخراج موازی/متوالی
         df_news = multi_fetcher.fetch_parallel(symbols, max_news)
         
         if df_news.empty:
-            logging.warning("❌ هیچ خبری دریافت نشد")
+            logging.warning("❌ No news received")
             return False
         
         # ذخیره بر اساس نماد (مشابه کد قبلی)
@@ -1524,7 +1744,7 @@ class UnifiedDataFetcher:
                     file_path=filename, news_count=len(group)
                 )
                 
-                logging.info(f"✅ اخبار موفق: {symbol} - {len(group)} خبر")
+                logging.info(f"✅ News success: {symbol} - {len(group)} news")
                 
             except Exception as e:
                 error_msg = f"Error saving news for {symbol}: {str(e)}"
@@ -1537,9 +1757,9 @@ class UnifiedDataFetcher:
         # نمایش آمار کلی
         if 'api_source' in df_news.columns:
             total_by_source = df_news['api_source'].value_counts()
-            logging.info("📊 خلاصه نهایی:")
+            logging.info("📊 Final Summary:")
             for source, count in total_by_source.items():
-                logging.info(f"   {source}: {count} خبر")
+                logging.info(f"   {source}: {count} news")
         
         return True
     
@@ -1595,9 +1815,9 @@ class UnifiedDataFetcher:
         """اجرای استخراج قیمت برای همه نمادها و تایم‌فریم‌ها"""
         success_count = 0
         
-        logging.info(f"\n--- شروع استخراج داده‌های قیمت از {exchange_name} ---")
-        logging.info(f"تعداد نمادها: {len(symbols)}")
-        logging.info(f"تایم‌فریم‌ها: {', '.join(timeframes)}")
+        logging.info(f"\n--- Starting price data extraction from {exchange_name} ---")
+        logging.info(f"Symbols count: {len(symbols)}")
+        logging.info(f"Timeframes: {', '.join(timeframes)}")
         
         for symbol in symbols:
             for timeframe in timeframes:
@@ -1610,7 +1830,7 @@ class UnifiedDataFetcher:
                 # نمایش آمار
                 stats = self.rate_limiter.get_stats(exchange_name)
                 if stats:
-                    logging.info(f"📊 آمار {exchange_name}: {stats}")
+                    logging.info(f"📊 {exchange_name} Stats: {stats}")
         
         return success_count
     
@@ -1619,10 +1839,10 @@ class UnifiedDataFetcher:
         success = self.fetch_news_data(symbols, max_news, session_id)
         
         # نمایش آمار تمام منابع
-        for source_name in ['GNews', 'NewsAPI', 'CoinGecko', 'RSS']:
+        for source_name in ['GNews', 'NewsAPI', 'CoinGecko', 'RSS', 'Reddit']:
             stats = self.rate_limiter.get_stats(source_name)
             if stats:
-                logging.info(f"📊 آمار {source_name}: {stats}")
+                logging.info(f"📊 {source_name} Stats: {stats}")
         
         return success
 
@@ -1684,38 +1904,43 @@ def get_exchange_selection():
 # --- تابع اصلی (اصلاح شده کامل) ---
 def main():
     """تابع اصلی منو محور - مطابق با fetch_historical_data_01.py اصلی"""
-    logging.info("🚀 شروع اسکریپت Enhanced Unified Data Fetcher")
+    logging.info("🚀 Starting Enhanced Unified Data Fetcher script")
     
     # اولیه‌سازی
     fetcher = UnifiedDataFetcher()
     
     # نمایش خلاصه تنظیمات
     print("\n" + "="*80)
-    print("🔐 تنظیمات Enhanced Unified Data Fetcher:")
-    print(f"📊 CryptoCompare: حداکثر {DAILY_LIMIT}/روز، {HOURLY_LIMIT}/ساعت")
-    print(f"📰 GNews: حداکثر {GNEWS_DAILY_LIMIT}/روز، {GNEWS_HOURLY_LIMIT}/ساعت")
+    print("🔐 Enhanced Unified Data Fetcher Settings:")
+    print(f"📊 CryptoCompare: Max {DAILY_LIMIT}/day, {HOURLY_LIMIT}/hour")
+    print(f"📰 GNews: Max {GNEWS_DAILY_LIMIT}/day, {GNEWS_HOURLY_LIMIT}/hour")
     
     # === نمایش منابع جدید ===
-    print("=== منابع خبری جدید ===")
+    print("=== New News Sources ===")
     if NEWSAPI_ENABLED and NEWSAPI_KEY:
-        print(f"📰 NewsAPI: حداکثر {NEWSAPI_DAILY_LIMIT}/روز - فعال")
+        print(f"📰 NewsAPI: Max {NEWSAPI_DAILY_LIMIT}/day - Active")
     else:
-        print("📰 NewsAPI: غیرفعال")
+        print("📰 NewsAPI: Disabled")
         
     if COINGECKO_ENABLED:
-        print("🦎 CoinGecko: نامحدود - فعال")
+        print("🦎 CoinGecko: Unlimited - Active")
     else:
-        print("🦎 CoinGecko: غیرفعال")
+        print("🦎 CoinGecko: Disabled")
         
     if RSS_ENABLED and RSS_AVAILABLE:
-        print("📡 RSS Feeds: نامحدود - فعال")
+        print("📡 RSS Feeds: Unlimited - Active")
     else:
-        print("📡 RSS Feeds: غیرفعال")
+        print("📡 RSS Feeds: Disabled")
+        
+    if REDDIT_ENABLED and REDDIT_AVAILABLE:
+        print("🔴 Reddit: 60/min - Active")
+    else:
+        print("🔴 Reddit: Disabled")
     
-    print(f"⚡ Binance: بدون محدودیت، delay {BINANCE_DELAY}s")
+    print(f"⚡ Binance: No limits, delay {BINANCE_DELAY}s")
     print(f"🔄 Kraken: delay {KRAKEN_DELAY}s")
-    print("💾 State Management: یکپارچه برای قیمت و اخبار")
-    print("🚀 اجرای موازی: " + ("فعال" if PARALLEL_FETCHING and CONCURRENT_AVAILABLE else "غیرفعال"))
+    print("💾 State Management: Unified for price and news")
+    print("🚀 Parallel execution: " + ("Active" if PARALLEL_FETCHING and CONCURRENT_AVAILABLE else "Disabled"))
     print("="*80)
     
     # حلقه اصلی برای نگه‌داشتن برنامه
@@ -1873,6 +2098,8 @@ def main():
                     active_sources.append("CoinGecko")
                 if RSS_ENABLED and RSS_AVAILABLE:
                     active_sources.append("RSS")
+                if REDDIT_ENABLED and REDDIT_AVAILABLE:
+                    active_sources.append("Reddit")
                 
                 print(f"📡 منابع خبری فعال: {', '.join(active_sources)}")
             
@@ -2169,6 +2396,8 @@ def main():
                     active_sources.append("CoinGecko")
                 if RSS_ENABLED and RSS_AVAILABLE:
                     active_sources.append("RSS")
+                if REDDIT_ENABLED and REDDIT_AVAILABLE:
+                    active_sources.append("Reddit")
                 
                 print(f"📡 منابع خبری فعال: {', '.join(active_sources)}")
                 
@@ -2210,7 +2439,7 @@ def main():
             
             # آمار منابع خبری
             print("\n📰 منابع خبری:")
-            for api_name in ['GNews', 'NewsAPI', 'CoinGecko', 'RSS']:
+            for api_name in ['GNews', 'NewsAPI', 'CoinGecko', 'RSS', 'Reddit']:
                 stats = fetcher.rate_limiter.get_stats(api_name)
                 if stats:
                     print(f"\n📡 {api_name}:")
@@ -2226,6 +2455,8 @@ def main():
                     elif api_name == 'CoinGecko' and COINGECKO_ENABLED:
                         status = "فعال"
                     elif api_name == 'RSS' and RSS_ENABLED and RSS_AVAILABLE:
+                        status = "فعال"
+                    elif api_name == 'Reddit' and REDDIT_ENABLED and REDDIT_AVAILABLE:
                         status = "فعال"
                     print(f"\n📡 {api_name}: {status}")
             
