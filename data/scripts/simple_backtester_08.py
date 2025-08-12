@@ -2,29 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-اسکریپت بک تست پیشرفته Enhanced v3.0 - سازگاری کامل با Pipeline جدید
+اسکریپت بک تست پیشرفته Enhanced v3.1 - سازگاری کامل با Telegram-based Pipeline
 
-🔧 تغییرات مهم v3.0 (سازگاری کامل):
-- ✅ پشتیبانی کامل از Enhanced Models v6.0+ (58+ features)
-- ✅ Sentiment Features Integration واقعی (6 features)
-- ✅ Reddit Features Support کامل (4+ features)
-- ✅ Optimal Threshold Usage از model package
-- ✅ Data Quality Validation (sentiment & Reddit coverage)
-- ✅ Feature Categories Analysis (technical vs sentiment vs Reddit)
-- ✅ Enhanced Performance Metrics و Reporting
-- ✅ Multi-source Data Quality Analysis
+🔧 تغییرات مهم v3.1 (اصلاحات حیاتی Telegram-based):
+- ✅ پشتیبانی کامل از Enhanced Models v6.1+ (58+ features)
+- ✅ Telegram-derived Reddit Features Integration (بجای Reddit API)
+- ✅ اصلاح data quality analysis: تشخیص telegram mapping
+- ✅ ادغام sentiment و reddit impact analysis (جلوگیری از تحلیل دوگانه)
+- ✅ اصلاح enhanced visualizations: نمایش telegram-based features
+- ✅ بهبود reporting: واقعی از telegram capabilities
+- ✅ Feature Categories Analysis با telegram mapping detection
+- ✅ Enhanced Performance Metrics با telegram-derived reddit
+- ✅ Multi-source Data Quality Analysis (telegram-based)
 - ✅ Comprehensive Error Handling بهبود یافته
-- ✅ Enhanced Visualizations با sentiment analysis
 - ✅ Fallback Mechanism برای backward compatibility
 
-ویژگی‌های Enhanced:
+ویژگی‌های Enhanced v3.1:
 - بک تست چند نمادی و چند بازه زمانی
-- ردیابی دلیل خروج و sentiment impact
+- ردیابی دلیل خروج و telegram sentiment impact
 - معیارهای عملکرد پیشرفته (شارپ، حداکثر افت سرمایه و غیره)
 - تجسم تعاملی با برچسب‌های Enhanced
-- گزارش‌های معاملاتی دقیق با sentiment analysis
-- تحلیل تأثیر Reddit features
-- Multi-source data effectiveness reporting
+- گزارش‌های معاملاتی دقیق با telegram sentiment analysis
+- تحلیل تأثیر Telegram-derived Reddit features
+- Multi-source data effectiveness reporting (telegram-based)
 """
 import os
 import glob
@@ -53,11 +53,11 @@ try:
     TRADE_SIZE_PERCENT = config.getfloat('Backtester_Settings', 'trade_size_percent')
     TARGET_FUTURE_PERIODS = config.getint('ETL_Settings', 'target_future_periods')
     
-    # === Enhanced Settings جدید ===
+    # === Enhanced Settings جدید برای Telegram-based ===
     MIN_SENTIMENT_COVERAGE = config.getfloat('Data_Quality', 'min_sentiment_coverage', fallback=0.10)
-    MIN_REDDIT_COVERAGE = config.getfloat('Data_Quality', 'min_reddit_coverage', fallback=0.05)
+    MIN_TELEGRAM_REDDIT_COVERAGE = config.getfloat('Data_Quality', 'min_telegram_reddit_coverage', fallback=0.05)  # اصلاح نام
     SENTIMENT_ANALYSIS_ENABLED = config.getboolean('Enhanced_Analysis', 'sentiment_analysis_enabled', fallback=True)
-    REDDIT_ANALYSIS_ENABLED = config.getboolean('Enhanced_Analysis', 'reddit_analysis_enabled', fallback=True)
+    TELEGRAM_REDDIT_ANALYSIS_ENABLED = config.getboolean('Enhanced_Analysis', 'telegram_reddit_analysis_enabled', fallback=True)  # اصلاح نام
     DETAILED_FEATURE_ANALYSIS = config.getboolean('Enhanced_Analysis', 'detailed_feature_analysis', fallback=True)
     
 except Exception as e:
@@ -159,15 +159,16 @@ def find_enhanced_latest_file(pattern: str, description: str) -> str:
         logging.error(f"❌ Enhanced error in file search for {description}: {e}")
         return None
 
-def analyze_enhanced_data_quality(df: pd.DataFrame) -> Dict[str, Any]:
-    """تحلیل کیفیت داده Enhanced با sentiment و Reddit features"""
+def analyze_telegram_enhanced_data_quality(df: pd.DataFrame) -> Dict[str, Any]:
+    """🔧 اصلاح 1: تحلیل کیفیت داده Enhanced با Telegram-based features"""
     quality_analysis = {
         'total_records': len(df),
         'sentiment_features': [],
-        'reddit_features': [],
+        'telegram_derived_reddit_features': [],  # 🔧 اصلاح: نام جدید
         'technical_features': [],
         'sentiment_coverage': 0,
-        'reddit_coverage': 0,
+        'telegram_reddit_coverage': 0,  # 🔧 اصلاح: coverage جدید
+        'telegram_mapping_detected': False,  # 🔧 اصلاح: تشخیص mapping
         'quality_score': 0,
         'warnings': []
     }
@@ -181,15 +182,15 @@ def analyze_enhanced_data_quality(df: pd.DataFrame) -> Dict[str, Any]:
             if 'sentiment' in feature_lower:
                 quality_analysis['sentiment_features'].append(feature)
             elif 'reddit' in feature_lower:
-                quality_analysis['reddit_features'].append(feature)
+                quality_analysis['telegram_derived_reddit_features'].append(feature)  # 🔧 اصلاح: نام جدید
             elif feature not in ['target', 'timestamp', 'close', 'open', 'high', 'low', 'volume']:
                 quality_analysis['technical_features'].append(feature)
         
         logging.info(f"🎭 Sentiment features found: {len(quality_analysis['sentiment_features'])}")
-        logging.info(f"🔴 Reddit features found: {len(quality_analysis['reddit_features'])}")
+        logging.info(f"📱 Telegram-derived Reddit features found: {len(quality_analysis['telegram_derived_reddit_features'])}")  # 🔧 اصلاح
         logging.info(f"⚙️ Technical features found: {len(quality_analysis['technical_features'])}")
         
-        # تحلیل sentiment coverage
+        # 🔧 اصلاح 1: تحلیل sentiment coverage
         if quality_analysis['sentiment_features']:
             sentiment_non_zero = 0
             for feature in quality_analysis['sentiment_features']:
@@ -204,27 +205,37 @@ def analyze_enhanced_data_quality(df: pd.DataFrame) -> Dict[str, Any]:
             if quality_analysis['sentiment_coverage'] < MIN_SENTIMENT_COVERAGE:
                 quality_analysis['warnings'].append(f"Low sentiment coverage ({quality_analysis['sentiment_coverage']:.1%})")
         
-        # تحلیل Reddit coverage
-        if quality_analysis['reddit_features']:
-            reddit_non_zero = 0
-            for feature in quality_analysis['reddit_features']:
+        # 🔧 اصلاح 1: تحلیل Telegram-derived Reddit coverage
+        if quality_analysis['telegram_derived_reddit_features']:
+            telegram_reddit_non_zero = 0
+            for feature in quality_analysis['telegram_derived_reddit_features']:
                 if feature in df.columns:
                     non_zero_count = (df[feature] != 0).sum()
                     if non_zero_count > 0:
-                        reddit_non_zero += 1
+                        telegram_reddit_non_zero += 1
             
-            quality_analysis['reddit_coverage'] = reddit_non_zero / len(quality_analysis['reddit_features'])
-            logging.info(f"📊 Reddit coverage: {quality_analysis['reddit_coverage']:.2%}")
+            quality_analysis['telegram_reddit_coverage'] = telegram_reddit_non_zero / len(quality_analysis['telegram_derived_reddit_features'])
+            logging.info(f"📊 Telegram-derived Reddit coverage: {quality_analysis['telegram_reddit_coverage']:.2%}")
             
-            if quality_analysis['reddit_coverage'] > 0 and quality_analysis['reddit_coverage'] < MIN_REDDIT_COVERAGE:
-                quality_analysis['warnings'].append(f"Low Reddit coverage ({quality_analysis['reddit_coverage']:.1%})")
+            if quality_analysis['telegram_reddit_coverage'] > 0 and quality_analysis['telegram_reddit_coverage'] < MIN_TELEGRAM_REDDIT_COVERAGE:
+                quality_analysis['warnings'].append(f"Low Telegram-Reddit coverage ({quality_analysis['telegram_reddit_coverage']:.1%})")
+        
+        # 🔧 اصلاح 1: تشخیص Telegram mapping
+        if ('sentiment_score' in df.columns and 'reddit_score' in df.columns):
+            # بررسی همبستگی برای تشخیص mapping
+            correlation = df['sentiment_score'].corr(df['reddit_score'])
+            if correlation > 0.95:  # همبستگی بالا نشان‌دهنده mapping است
+                quality_analysis['telegram_mapping_detected'] = True
+                logging.info("✅ Telegram → Reddit mapping detected in data")
+            else:
+                logging.info(f"📊 Sentiment-Reddit correlation: {correlation:.3f} (no direct mapping)")
         
         # محاسبه quality score کلی
         base_score = 0.6  # امتیاز پایه برای technical features
         sentiment_bonus = quality_analysis['sentiment_coverage'] * 0.25 if SENTIMENT_ANALYSIS_ENABLED else 0
-        reddit_bonus = quality_analysis['reddit_coverage'] * 0.15 if REDDIT_ANALYSIS_ENABLED else 0
+        telegram_reddit_bonus = quality_analysis['telegram_reddit_coverage'] * 0.15 if TELEGRAM_REDDIT_ANALYSIS_ENABLED else 0
         
-        quality_analysis['quality_score'] = base_score + sentiment_bonus + reddit_bonus
+        quality_analysis['quality_score'] = base_score + sentiment_bonus + telegram_reddit_bonus
         
         logging.info(f"📈 Enhanced data quality score: {quality_analysis['quality_score']:.2%}")
         
@@ -241,7 +252,7 @@ def analyze_enhanced_data_quality(df: pd.DataFrame) -> Dict[str, Any]:
     return quality_analysis
 
 def load_enhanced_model_package(model_file: str) -> Tuple[Any, float, Dict[str, Any]]:
-    """بارگذاری Enhanced model package با اطلاعات کامل"""
+    """بارگذاری Enhanced model package با اطلاعات کامل Telegram-based"""
     try:
         logging.info(f"🤖 Loading Enhanced model: {os.path.basename(model_file)}")
         model_data = joblib.load(model_file)
@@ -249,13 +260,13 @@ def load_enhanced_model_package(model_file: str) -> Tuple[Any, float, Dict[str, 
         # تشخیص نوع مدل
         if isinstance(model_data, dict):
             if 'model' in model_data:
-                # Enhanced model package v6.0+
+                # Enhanced model package v6.1+
                 model = model_data['model']
                 optimal_threshold = model_data.get('optimal_threshold', 0.5)
                 
                 model_info = {
                     'model_type': model_data.get('model_type', 'Unknown'),
-                    'model_version': model_data.get('model_version', '6.0_enhanced'),
+                    'model_version': model_data.get('model_version', '6.1_enhanced'),
                     'accuracy': model_data.get('accuracy', 0),
                     'precision': model_data.get('precision', 0),
                     'recall': model_data.get('recall', 0),
@@ -264,13 +275,17 @@ def load_enhanced_model_package(model_file: str) -> Tuple[Any, float, Dict[str, 
                     'feature_categories': model_data.get('feature_categories', {}),
                     'sentiment_stats': model_data.get('sentiment_stats', {}),
                     'correlation_analysis': model_data.get('correlation_analysis', {}),
+                    'telegram_reddit_mapping': model_data.get('telegram_reddit_mapping', False),  # 🔧 اصلاح: telegram mapping
+                    'reddit_source': model_data.get('reddit_source', 'unknown'),  # 🔧 اصلاح: منبع reddit
                     'is_enhanced': True
                 }
                 
-                logging.info(f"✅ Enhanced Model Package v6.0+ loaded")
+                logging.info(f"✅ Enhanced Model Package v6.1+ loaded")
                 logging.info(f"   Model Type: {model_info['model_type']}")
                 logging.info(f"   Optimal Threshold: {optimal_threshold:.4f}")
                 logging.info(f"   Expected Features: {len(model_info['feature_columns'])}")
+                logging.info(f"   📱 Telegram-Reddit Mapping: {'Yes' if model_info['telegram_reddit_mapping'] else 'No'}")  # 🔧 اصلاح
+                logging.info(f"   🔴 Reddit Source: {model_info['reddit_source']}")  # 🔧 اصلاح
                 
                 # نمایش performance metrics
                 if model_info['accuracy'] > 0:
@@ -285,7 +300,10 @@ def load_enhanced_model_package(model_file: str) -> Tuple[Any, float, Dict[str, 
                     logging.info(f"   🏷️ Feature Categories:")
                     for category, features in feature_categories.items():
                         if features:
-                            logging.info(f"      {category}: {len(features)} features")
+                            category_display = category
+                            if category == 'telegram_derived_features':  # 🔧 اصلاح
+                                category_display += " (از Telegram sentiment مشتق شده)"
+                            logging.info(f"      {category_display}: {len(features)} features")
                 
                 return model, optimal_threshold, model_info
             else:
@@ -302,7 +320,9 @@ def load_enhanced_model_package(model_file: str) -> Tuple[Any, float, Dict[str, 
                 'model_type': type(model_data).__name__,
                 'is_enhanced': False,
                 'is_legacy': True,
-                'feature_columns': []
+                'feature_columns': [],
+                'telegram_reddit_mapping': False,
+                'reddit_source': 'unknown'
             }
             logging.warning(f"⚠️ Legacy model loaded: {model_info['model_type']}")
         
@@ -329,140 +349,163 @@ def calculate_enhanced_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 
         return 0
     return np.sqrt(252) * excess_returns.mean() / excess_returns.std()
 
-def analyze_sentiment_impact(trade_history: List[Dict], df: pd.DataFrame) -> Dict[str, Any]:
-    """تحلیل تأثیر sentiment features در نتایج معاملات"""
-    sentiment_analysis = {
+def analyze_telegram_sentiment_and_reddit_impact(trade_history: List[Dict], df: pd.DataFrame) -> Dict[str, Any]:
+    """🔧 اصلاح 2: تحلیل یکپارچه تأثیر Telegram sentiment و derived Reddit features (ادغام شده)"""
+    telegram_analysis = {
+        # Sentiment analysis
         'sentiment_positive_trades': 0,
         'sentiment_negative_trades': 0,
-        'sentiment_correlation': 0,
         'avg_sentiment_winners': 0,
         'avg_sentiment_losers': 0,
-        'sentiment_effectiveness': 0
+        'sentiment_effectiveness': 0,
+        
+        # Telegram-derived Reddit analysis
+        'high_telegram_reddit_activity_trades': 0,
+        'low_telegram_reddit_activity_trades': 0,
+        'avg_telegram_reddit_winners': 0,
+        'avg_telegram_reddit_losers': 0,
+        'telegram_reddit_effectiveness': 0,
+        
+        # Mapping analysis
+        'telegram_mapping_confirmed': False,
+        'sentiment_reddit_correlation': 0,
+        
+        # Combined effectiveness
+        'combined_effectiveness': 0,
+        'telegram_vs_reddit_consistency': 0
     }
     
     try:
-        if not trade_history or 'sentiment_score' not in df.columns:
-            return sentiment_analysis
+        if not trade_history:
+            return telegram_analysis
         
+        # بررسی وجود features
+        has_sentiment = 'sentiment_score' in df.columns
+        has_reddit = 'reddit_score' in df.columns
+        
+        if not has_sentiment and not has_reddit:
+            logging.warning("⚠️ No sentiment or Reddit features found for impact analysis")
+            return telegram_analysis
+        
+        # 🔧 اصلاح 2: تشخیص Telegram mapping
+        if has_sentiment and has_reddit:
+            correlation = df['sentiment_score'].corr(df['reddit_score'])
+            telegram_analysis['sentiment_reddit_correlation'] = correlation
+            if correlation > 0.95:
+                telegram_analysis['telegram_mapping_confirmed'] = True
+                logging.info(f"✅ Telegram mapping confirmed in analysis: correlation={correlation:.4f}")
+            else:
+                logging.info(f"📊 Sentiment-Reddit correlation: {correlation:.4f}")
+        
+        # جمع‌آوری داده‌ها برای تحلیل
         sentiment_values_winners = []
         sentiment_values_losers = []
-        
-        for trade in trade_history:
-            try:
-                # پیدا کردن sentiment score در زمان ورود
-                entry_date = trade['entry_date']
-                if entry_date in df.index:
-                    sentiment_score = df.loc[entry_date, 'sentiment_score']
-                    
-                    if trade['pnl'] > 0:
-                        sentiment_values_winners.append(sentiment_score)
-                        if sentiment_score > 0:
-                            sentiment_analysis['sentiment_positive_trades'] += 1
-                    else:
-                        sentiment_values_losers.append(sentiment_score)
-                        if sentiment_score < 0:
-                            sentiment_analysis['sentiment_negative_trades'] += 1
-            except (KeyError, TypeError):
-                continue
-        
-        # محاسبه آمارها
-        if sentiment_values_winners:
-            sentiment_analysis['avg_sentiment_winners'] = np.mean(sentiment_values_winners)
-        
-        if sentiment_values_losers:
-            sentiment_analysis['avg_sentiment_losers'] = np.mean(sentiment_values_losers)
-        
-        # محاسبه effectiveness
-        total_trades = len(trade_history)
-        correct_sentiment_predictions = sentiment_analysis['sentiment_positive_trades']
-        if total_trades > 0:
-            sentiment_analysis['sentiment_effectiveness'] = correct_sentiment_predictions / total_trades
-        
-        logging.info(f"🎭 Sentiment Analysis Results:")
-        logging.info(f"   Sentiment-positive winning trades: {sentiment_analysis['sentiment_positive_trades']}")
-        logging.info(f"   Average sentiment (winners): {sentiment_analysis['avg_sentiment_winners']:.4f}")
-        logging.info(f"   Average sentiment (losers): {sentiment_analysis['avg_sentiment_losers']:.4f}")
-        logging.info(f"   Sentiment effectiveness: {sentiment_analysis['sentiment_effectiveness']:.2%}")
-        
-    except Exception as e:
-        logging.warning(f"Sentiment impact analysis failed: {e}")
-    
-    return sentiment_analysis
-
-def analyze_reddit_impact(trade_history: List[Dict], df: pd.DataFrame) -> Dict[str, Any]:
-    """تحلیل تأثیر Reddit features در نتایج معاملات"""
-    reddit_analysis = {
-        'high_reddit_activity_trades': 0,
-        'low_reddit_activity_trades': 0,
-        'avg_reddit_score_winners': 0,
-        'avg_reddit_score_losers': 0,
-        'reddit_effectiveness': 0
-    }
-    
-    try:
-        reddit_features = [col for col in df.columns if 'reddit' in col.lower()]
-        if not trade_history or not reddit_features:
-            return reddit_analysis
-        
-        # استفاده از reddit_score اگر موجود باشد
-        reddit_column = 'reddit_score' if 'reddit_score' in df.columns else reddit_features[0]
-        
         reddit_values_winners = []
         reddit_values_losers = []
-        reddit_threshold = df[reddit_column].median()  # threshold بر اساس median
         
         for trade in trade_history:
             try:
                 entry_date = trade['entry_date']
                 if entry_date in df.index:
-                    reddit_score = df.loc[entry_date, reddit_column]
                     
-                    if trade['pnl'] > 0:
-                        reddit_values_winners.append(reddit_score)
-                        if reddit_score > reddit_threshold:
-                            reddit_analysis['high_reddit_activity_trades'] += 1
-                    else:
-                        reddit_values_losers.append(reddit_score)
-                        if reddit_score <= reddit_threshold:
-                            reddit_analysis['low_reddit_activity_trades'] += 1
+                    # Sentiment analysis
+                    if has_sentiment:
+                        sentiment_score = df.loc[entry_date, 'sentiment_score']
+                        
+                        if trade['pnl'] > 0:
+                            sentiment_values_winners.append(sentiment_score)
+                            if sentiment_score > 0:
+                                telegram_analysis['sentiment_positive_trades'] += 1
+                        else:
+                            sentiment_values_losers.append(sentiment_score)
+                            if sentiment_score < 0:
+                                telegram_analysis['sentiment_negative_trades'] += 1
+                    
+                    # 🔧 اصلاح 2: Telegram-derived Reddit analysis
+                    if has_reddit:
+                        reddit_score = df.loc[entry_date, 'reddit_score']
+                        reddit_threshold = df['reddit_score'].median()
+                        
+                        if trade['pnl'] > 0:
+                            reddit_values_winners.append(reddit_score)
+                            if reddit_score > reddit_threshold:
+                                telegram_analysis['high_telegram_reddit_activity_trades'] += 1
+                        else:
+                            reddit_values_losers.append(reddit_score)
+                            if reddit_score <= reddit_threshold:
+                                telegram_analysis['low_telegram_reddit_activity_trades'] += 1
+                        
             except (KeyError, TypeError):
                 continue
         
-        # محاسبه آمارها
-        if reddit_values_winners:
-            reddit_analysis['avg_reddit_score_winners'] = np.mean(reddit_values_winners)
+        # محاسبه آمارهای sentiment
+        if sentiment_values_winners:
+            telegram_analysis['avg_sentiment_winners'] = np.mean(sentiment_values_winners)
+        if sentiment_values_losers:
+            telegram_analysis['avg_sentiment_losers'] = np.mean(sentiment_values_losers)
         
+        # محاسبه آمارهای telegram-derived reddit
+        if reddit_values_winners:
+            telegram_analysis['avg_telegram_reddit_winners'] = np.mean(reddit_values_winners)
         if reddit_values_losers:
-            reddit_analysis['avg_reddit_score_losers'] = np.mean(reddit_values_losers)
+            telegram_analysis['avg_telegram_reddit_losers'] = np.mean(reddit_values_losers)
         
         # محاسبه effectiveness
         total_trades = len(trade_history)
-        correct_reddit_predictions = reddit_analysis['high_reddit_activity_trades']
         if total_trades > 0:
-            reddit_analysis['reddit_effectiveness'] = correct_reddit_predictions / total_trades
+            telegram_analysis['sentiment_effectiveness'] = telegram_analysis['sentiment_positive_trades'] / total_trades
+            telegram_analysis['telegram_reddit_effectiveness'] = telegram_analysis['high_telegram_reddit_activity_trades'] / total_trades
+            
+            # 🔧 اصلاح 2: Combined effectiveness (یکپارچه)
+            if telegram_analysis['telegram_mapping_confirmed']:
+                # اگر mapping تایید شده، از sentiment effectiveness استفاده کنیم
+                telegram_analysis['combined_effectiveness'] = telegram_analysis['sentiment_effectiveness']
+                telegram_analysis['telegram_vs_reddit_consistency'] = 1.0  # کامل consistent
+                logging.info("📱 Using sentiment effectiveness as combined (due to telegram mapping)")
+            else:
+                # اگر mapping نشده، میانگین وزنی
+                sentiment_weight = 0.7
+                reddit_weight = 0.3
+                telegram_analysis['combined_effectiveness'] = (
+                    telegram_analysis['sentiment_effectiveness'] * sentiment_weight +
+                    telegram_analysis['telegram_reddit_effectiveness'] * reddit_weight
+                )
+                # consistency بر اساس تفاوت effectiveness
+                effectiveness_diff = abs(telegram_analysis['sentiment_effectiveness'] - telegram_analysis['telegram_reddit_effectiveness'])
+                telegram_analysis['telegram_vs_reddit_consistency'] = 1 - effectiveness_diff
         
-        logging.info(f"🔴 Reddit Analysis Results:")
-        logging.info(f"   High Reddit activity winning trades: {reddit_analysis['high_reddit_activity_trades']}")
-        logging.info(f"   Average Reddit score (winners): {reddit_analysis['avg_reddit_score_winners']:.4f}")
-        logging.info(f"   Average Reddit score (losers): {reddit_analysis['avg_reddit_score_losers']:.4f}")
-        logging.info(f"   Reddit effectiveness: {reddit_analysis['reddit_effectiveness']:.2%}")
+        # لاگ نتایج یکپارچه
+        logging.info(f"🎭 Telegram Sentiment Analysis Results:")
+        logging.info(f"   Sentiment-positive winning trades: {telegram_analysis['sentiment_positive_trades']}")
+        logging.info(f"   Average sentiment (winners): {telegram_analysis['avg_sentiment_winners']:.4f}")
+        logging.info(f"   Average sentiment (losers): {telegram_analysis['avg_sentiment_losers']:.4f}")
+        logging.info(f"   Sentiment effectiveness: {telegram_analysis['sentiment_effectiveness']:.2%}")
+        
+        logging.info(f"📱 Telegram-derived Reddit Analysis Results:")
+        logging.info(f"   High activity winning trades: {telegram_analysis['high_telegram_reddit_activity_trades']}")
+        logging.info(f"   Average Reddit score (winners): {telegram_analysis['avg_telegram_reddit_winners']:.4f}")
+        logging.info(f"   Average Reddit score (losers): {telegram_analysis['avg_telegram_reddit_losers']:.4f}")
+        logging.info(f"   Telegram-Reddit effectiveness: {telegram_analysis['telegram_reddit_effectiveness']:.2%}")
+        
+        logging.info(f"🔗 Combined Analysis:")
+        logging.info(f"   Combined effectiveness: {telegram_analysis['combined_effectiveness']:.2%}")
+        logging.info(f"   Telegram vs Reddit consistency: {telegram_analysis['telegram_vs_reddit_consistency']:.2%}")
         
     except Exception as e:
-        logging.warning(f"Reddit impact analysis failed: {e}")
+        logging.warning(f"Telegram sentiment/Reddit impact analysis failed: {e}")
     
-    return reddit_analysis
+    return telegram_analysis
 
 def generate_enhanced_report_file(report_data: Dict, symbol: str, timeframe: str, 
-                                data_quality: Dict, sentiment_impact: Dict, 
-                                reddit_impact: Dict, model_info: Dict):
-    """تولید گزارش Enhanced کامل"""
+                                data_quality: Dict, telegram_impact: Dict, model_info: Dict):
+    """🔧 اصلاح 3: تولید گزارش Enhanced کامل با Telegram-based features"""
     timestamp_str = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"Enhanced_Backtest_Report_{symbol.replace('/', '-')}_{timeframe}_{timestamp_str}.txt"
+    filename = f"Enhanced_Telegram_Backtest_Report_{symbol.replace('/', '-')}_{timeframe}_{timestamp_str}.txt"
     filepath = os.path.join(report_subfolder_path, filename)
     
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write("="*80 + "\n")
-        f.write("      ENHANCED BACKTEST STRATEGY PERFORMANCE REPORT v3.0\n")
+        f.write("    ENHANCED TELEGRAM-BASED BACKTEST PERFORMANCE REPORT v3.1\n")
         f.write("="*80 + "\n\n")
         
         # اطلاعات کلی Enhanced
@@ -471,17 +514,19 @@ def generate_enhanced_report_file(report_data: Dict, symbol: str, timeframe: str
         f.write(f"Symbol tested:         {symbol}\n")
         f.write(f"Timeframe tested:      {timeframe}\n")
         f.write(f"Report date:           {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Enhanced API Version:  v6.1\n")
-        f.write(f"Backtester Version:    v3.0\n\n")
+        f.write(f"Enhanced API Version:  v6.1 (Telegram-based)\n")
+        f.write(f"Backtester Version:    v3.1\n\n")
         
         # اطلاعات مدل Enhanced
-        f.write("🤖 Enhanced Model Information:\n")
+        f.write("🤖 Enhanced Telegram-based Model Information:\n")
         f.write("-"*60 + "\n")
         f.write(f"Model Type:            {model_info.get('model_type', 'Unknown')}\n")
         f.write(f"Model Version:         {model_info.get('model_version', 'Unknown')}\n")
         f.write(f"Is Enhanced:           {'Yes' if model_info.get('is_enhanced') else 'No'}\n")
         f.write(f"Expected Features:     {len(model_info.get('feature_columns', []))}\n")
         f.write(f"Optimal Threshold:     {report_data.get('optimal_threshold', 0.5):.4f}\n")
+        f.write(f"Telegram-Reddit Map:   {'Yes' if model_info.get('telegram_reddit_mapping') else 'No'}\n")  # 🔧 اصلاح
+        f.write(f"Reddit Source:         {model_info.get('reddit_source', 'unknown')}\n")  # 🔧 اصلاح
         
         if model_info.get('accuracy', 0) > 0:
             f.write(f"Model Accuracy:        {model_info['accuracy']:.2%}\n")
@@ -493,22 +538,26 @@ def generate_enhanced_report_file(report_data: Dict, symbol: str, timeframe: str
         # Feature Categories Analysis
         feature_categories = model_info.get('feature_categories', {})
         if feature_categories:
-            f.write("🏷️ Enhanced Feature Categories:\n")
+            f.write("🏷️ Enhanced Telegram-based Feature Categories:\n")
             f.write("-"*60 + "\n")
             for category, features in feature_categories.items():
-                f.write(f"{category:<25} {len(features) if features else 0} features\n")
+                category_display = category
+                if category == 'telegram_derived_features':  # 🔧 اصلاح
+                    category_display += " (Telegram-derived)"
+                f.write(f"{category_display:<30} {len(features) if features else 0} features\n")
             f.write("\n")
         
-        # Data Quality Analysis
-        f.write("📈 Enhanced Data Quality Analysis:\n")
+        # 🔧 اصلاح 3: Data Quality Analysis (Telegram-based)
+        f.write("📈 Enhanced Telegram-based Data Quality Analysis:\n")
         f.write("-"*60 + "\n")
-        f.write(f"Total Records:         {data_quality['total_records']:,}\n")
-        f.write(f"Sentiment Features:    {len(data_quality['sentiment_features'])}\n")
-        f.write(f"Reddit Features:       {len(data_quality['reddit_features'])}\n")
-        f.write(f"Technical Features:    {len(data_quality['technical_features'])}\n")
-        f.write(f"Sentiment Coverage:    {data_quality['sentiment_coverage']:.2%}\n")
-        f.write(f"Reddit Coverage:       {data_quality['reddit_coverage']:.2%}\n")
-        f.write(f"Quality Score:         {data_quality['quality_score']:.2%}\n")
+        f.write(f"Total Records:           {data_quality['total_records']:,}\n")
+        f.write(f"Sentiment Features:      {len(data_quality['sentiment_features'])}\n")
+        f.write(f"Telegram-Reddit Features: {len(data_quality['telegram_derived_reddit_features'])}\n")  # 🔧 اصلاح
+        f.write(f"Technical Features:      {len(data_quality['technical_features'])}\n")
+        f.write(f"Sentiment Coverage:      {data_quality['sentiment_coverage']:.2%}\n")
+        f.write(f"Telegram-Reddit Coverage: {data_quality['telegram_reddit_coverage']:.2%}\n")  # 🔧 اصلاح
+        f.write(f"Telegram Mapping:        {'Detected' if data_quality['telegram_mapping_detected'] else 'Not Detected'}\n")  # 🔧 اصلاح
+        f.write(f"Quality Score:           {data_quality['quality_score']:.2%}\n")
         
         if data_quality['warnings']:
             f.write("⚠️ Data Quality Warnings:\n")
@@ -524,60 +573,66 @@ def generate_enhanced_report_file(report_data: Dict, symbol: str, timeframe: str
                 f.write(f"{key:<25} {value}\n")
         f.write("\n")
         
-        # Sentiment Impact Analysis
-        if SENTIMENT_ANALYSIS_ENABLED and sentiment_impact:
-            f.write("🎭 Sentiment Impact Analysis:\n")
-            f.write("-"*60 + "\n")
-            f.write(f"Sentiment Positive Wins:   {sentiment_impact['sentiment_positive_trades']}\n")
-            f.write(f"Avg Sentiment (Winners):   {sentiment_impact['avg_sentiment_winners']:.4f}\n")
-            f.write(f"Avg Sentiment (Losers):    {sentiment_impact['avg_sentiment_losers']:.4f}\n")
-            f.write(f"Sentiment Effectiveness:   {sentiment_impact['sentiment_effectiveness']:.2%}\n\n")
-        
-        # Reddit Impact Analysis
-        if REDDIT_ANALYSIS_ENABLED and reddit_impact:
-            f.write("🔴 Reddit Impact Analysis:\n")
-            f.write("-"*60 + "\n")
-            f.write(f"High Reddit Activity Wins: {reddit_impact['high_reddit_activity_trades']}\n")
-            f.write(f"Avg Reddit Score (Winners): {reddit_impact['avg_reddit_score_winners']:.4f}\n")
-            f.write(f"Avg Reddit Score (Losers):  {reddit_impact['avg_reddit_score_losers']:.4f}\n")
-            f.write(f"Reddit Effectiveness:      {reddit_impact['reddit_effectiveness']:.2%}\n\n")
+        # 🔧 اصلاح 3: Telegram Impact Analysis (یکپارچه)
+        if SENTIMENT_ANALYSIS_ENABLED and telegram_impact:
+            f.write("📱 Enhanced Telegram Sentiment & Derived Reddit Impact Analysis:\n")
+            f.write("-"*70 + "\n")
+            f.write(f"Sentiment Positive Wins:       {telegram_impact['sentiment_positive_trades']}\n")
+            f.write(f"Avg Sentiment (Winners):       {telegram_impact['avg_sentiment_winners']:.4f}\n")
+            f.write(f"Avg Sentiment (Losers):        {telegram_impact['avg_sentiment_losers']:.4f}\n")
+            f.write(f"Sentiment Effectiveness:       {telegram_impact['sentiment_effectiveness']:.2%}\n")
+            f.write("\n")
+            
+            if TELEGRAM_REDDIT_ANALYSIS_ENABLED:
+                f.write(f"High Telegram-Reddit Activity:  {telegram_impact['high_telegram_reddit_activity_trades']}\n")
+                f.write(f"Avg Telegram-Reddit (Winners):  {telegram_impact['avg_telegram_reddit_winners']:.4f}\n")
+                f.write(f"Avg Telegram-Reddit (Losers):   {telegram_impact['avg_telegram_reddit_losers']:.4f}\n")
+                f.write(f"Telegram-Reddit Effectiveness:  {telegram_impact['telegram_reddit_effectiveness']:.2%}\n")
+                f.write("\n")
+                
+                f.write(f"📊 Combined Analysis:\n")
+                f.write(f"Telegram Mapping Confirmed:    {'Yes' if telegram_impact['telegram_mapping_confirmed'] else 'No'}\n")
+                f.write(f"Sentiment-Reddit Correlation:  {telegram_impact['sentiment_reddit_correlation']:.4f}\n")
+                f.write(f"Combined Effectiveness:        {telegram_impact['combined_effectiveness']:.2%}\n")
+                f.write(f"Telegram vs Reddit Consistency: {telegram_impact['telegram_vs_reddit_consistency']:.2%}\n")
+                f.write("\n")
         
         # Trade History Enhanced
-        f.write("📋 Enhanced Trade History:\n")
-        f.write("-"*100 + "\n")
+        f.write("📋 Enhanced Telegram-based Trade History:\n")
+        f.write("-"*110 + "\n")
         if report_data['trade_history']:
             f.write(f"{'#':<3} {'Entry Date':<16} {'Exit Date':<16} {'Entry $':<10} {'Exit $':<10} "
-                   f"{'P&L':<8} {'Sentiment':<10} {'Reddit':<8} {'Reason':<25}\n")
-            f.write("-"*100 + "\n")
+                   f"{'P&L':<8} {'Sentiment':<10} {'T-Reddit':<10} {'Reason':<25}\n")
+            f.write("-"*110 + "\n")
             
             for i, trade in enumerate(report_data['trade_history'], 1):
                 entry_ts = pd.to_datetime(str(trade['entry_date'])).strftime('%Y-%m-%d %H:%M')
                 exit_ts = pd.to_datetime(str(trade['exit_date'])).strftime('%Y-%m-%d %H:%M')
                 reason = trade.get('exit_reason', 'Target reached')
                 sentiment_val = trade.get('sentiment_at_entry', 0)
-                reddit_val = trade.get('reddit_at_entry', 0)
+                telegram_reddit_val = trade.get('telegram_reddit_at_entry', 0)  # 🔧 اصلاح: نام جدید
                 
                 f.write(f"{i:<3} {entry_ts:<16} {exit_ts:<16} "
                        f"${trade['entry_price']:<9.4f} ${trade['exit_price']:<9.4f} "
-                       f"{trade['pnl']:<7.2%} {sentiment_val:<9.4f} {reddit_val:<7.4f} {reason:<25}\n")
+                       f"{trade['pnl']:<7.2%} {sentiment_val:<9.4f} {telegram_reddit_val:<9.4f} {reason:<25}\n")
         else:
-            f.write("No trades executed in this Enhanced backtest period.\n")
+            f.write("No trades executed in this Enhanced Telegram-based backtest period.\n")
         
         f.write("\n" + "="*80 + "\n")
-        f.write("End of Enhanced Backtest Report v3.0\n")
+        f.write("End of Enhanced Telegram-based Backtest Report v3.1\n")
         f.write("="*80 + "\n")
     
-    logging.info(f"Enhanced report saved to '{filepath}'")
+    logging.info(f"Enhanced Telegram-based report saved to '{filepath}'")
 
-def generate_enhanced_visualizations(df: pd.DataFrame, trade_history: List[Dict], 
-                                   symbol: str, timeframe: str, report_path: str,
-                                   data_quality: Dict, sentiment_impact: Dict, reddit_impact: Dict):
-    """تولید نمودارهای Enhanced با sentiment و Reddit analysis"""
+def generate_enhanced_telegram_visualizations(df: pd.DataFrame, trade_history: List[Dict], 
+                                            symbol: str, timeframe: str, report_path: str,
+                                            data_quality: Dict, telegram_impact: Dict):
+    """🔧 اصلاح 4: تولید نمودارهای Enhanced با Telegram sentiment و derived Reddit analysis"""
     timestamp_str = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
     
     # Enhanced Price and Signals Chart
     fig, axes = plt.subplots(3, 2, figsize=(20, 15))
-    fig.suptitle(f'Enhanced Backtest Analysis - {symbol} ({timeframe})', fontsize=16, fontweight='bold')
+    fig.suptitle(f'Enhanced Telegram-based Backtest Analysis - {symbol} ({timeframe})', fontsize=16, fontweight='bold')
     
     # 1. Price chart with Enhanced signals
     ax1 = axes[0, 0]
@@ -597,21 +652,24 @@ def generate_enhanced_visualizations(df: pd.DataFrame, trade_history: List[Dict]
                         [trade['entry_price'], trade['exit_price']], 
                         'o-', color=color, markersize=6, linewidth=2, alpha=alpha)
                 
-                # Enhanced annotation with sentiment
+                # Enhanced annotation با telegram sentiment
                 if i < 10:  # نمایش annotation برای 10 معامله اول
                     mid_date = df.index[entry_idx + (exit_idx - entry_idx) // 2]
                     mid_price = (trade['entry_price'] + trade['exit_price']) / 2
                     sentiment_text = f"S:{trade.get('sentiment_at_entry', 0):.2f}" if 'sentiment_at_entry' in trade else ""
-                    ax1.annotate(f"{trade['pnl']:.1%}\n{sentiment_text}", 
+                    telegram_reddit_text = f"TR:{trade.get('telegram_reddit_at_entry', 0):.2f}" if 'telegram_reddit_at_entry' in trade else ""
+                    annotation_text = f"{trade['pnl']:.1%}\n{sentiment_text}\n{telegram_reddit_text}"
+                    
+                    ax1.annotate(annotation_text, 
                                xy=(mid_date, mid_price),
                                xytext=(5, 5), textcoords='offset points',
-                               fontsize=7, ha='left',
+                               fontsize=6, ha='left',
                                bbox=dict(boxstyle="round,pad=0.2", fc=color, alpha=0.3))
             except (KeyError, ValueError):
                 continue
     
     ax1.set_ylabel('Price ($)')
-    ax1.set_title('Enhanced Price Chart with Sentiment Info')
+    ax1.set_title('Enhanced Price Chart with Telegram Sentiment Info')
     ax1.grid(True, alpha=0.3)
     ax1.legend()
     
@@ -627,12 +685,12 @@ def generate_enhanced_visualizations(df: pd.DataFrame, trade_history: List[Dict]
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     
-    # 3. Sentiment Analysis Chart
+    # 3. Telegram Sentiment Analysis Chart
     ax3 = axes[1, 0]
-    sentiment_features = [col for col in df.columns if 'sentiment' in col.lower()]
+    sentiment_features = data_quality['sentiment_features']
     if sentiment_features and SENTIMENT_ANALYSIS_ENABLED:
         main_sentiment = 'sentiment_score' if 'sentiment_score' in df.columns else sentiment_features[0]
-        ax3.plot(df.index, df[main_sentiment], label='Sentiment Score', color='purple', alpha=0.7)
+        ax3.plot(df.index, df[main_sentiment], label='Telegram Sentiment Score', color='purple', alpha=0.7)
         ax3.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         
         # Mark trade entries with sentiment
@@ -643,36 +701,41 @@ def generate_enhanced_visualizations(df: pd.DataFrame, trade_history: List[Dict]
                     ax3.scatter(trade['entry_date'], trade['sentiment_at_entry'], 
                               color=color, s=50, alpha=0.8, marker='o')
     else:
-        ax3.text(0.5, 0.5, 'No Sentiment Data Available', ha='center', va='center', transform=ax3.transAxes)
+        ax3.text(0.5, 0.5, 'No Telegram Sentiment Data Available', ha='center', va='center', transform=ax3.transAxes)
     
-    ax3.set_ylabel('Sentiment Score')
-    ax3.set_title('Sentiment Analysis Over Time')
+    ax3.set_ylabel('Telegram Sentiment Score')
+    ax3.set_title('Telegram Sentiment Analysis Over Time')
     ax3.grid(True, alpha=0.3)
     ax3.legend()
     
-    # 4. Reddit Features Chart
+    # 4. 🔧 اصلاح 4: Telegram-derived Reddit Features Chart
     ax4 = axes[1, 1]
-    reddit_features = [col for col in df.columns if 'reddit' in col.lower()]
-    if reddit_features and REDDIT_ANALYSIS_ENABLED:
-        main_reddit = 'reddit_score' if 'reddit_score' in df.columns else reddit_features[0]
-        ax4.plot(df.index, df[main_reddit], label='Reddit Score', color='red', alpha=0.7)
+    telegram_reddit_features = data_quality['telegram_derived_reddit_features']
+    if telegram_reddit_features and TELEGRAM_REDDIT_ANALYSIS_ENABLED:
+        main_reddit = 'reddit_score' if 'reddit_score' in df.columns else telegram_reddit_features[0]
+        ax4.plot(df.index, df[main_reddit], label='Telegram-derived Reddit Score', color='red', alpha=0.7)
+        
+        # 🔧 اصلاح 4: اگر mapping تشخیص داده شده، sentiment و reddit را با هم نمایش دهیم
+        if data_quality.get('telegram_mapping_detected', False) and 'sentiment_score' in df.columns:
+            ax4.plot(df.index, df['sentiment_score'], label='Original Sentiment Score', 
+                    color='purple', alpha=0.5, linestyle='--')
         
         # Mark trade entries with Reddit activity
         if trade_history:
             for trade in trade_history:
-                if 'reddit_at_entry' in trade:
+                if 'telegram_reddit_at_entry' in trade:  # 🔧 اصلاح: نام جدید
                     color = 'green' if trade['pnl'] > 0 else 'red'
-                    ax4.scatter(trade['entry_date'], trade['reddit_at_entry'], 
+                    ax4.scatter(trade['entry_date'], trade['telegram_reddit_at_entry'], 
                               color=color, s=50, alpha=0.8, marker='s')
     else:
-        ax4.text(0.5, 0.5, 'No Reddit Data Available', ha='center', va='center', transform=ax4.transAxes)
+        ax4.text(0.5, 0.5, 'No Telegram-derived Reddit Data Available', ha='center', va='center', transform=ax4.transAxes)
     
-    ax4.set_ylabel('Reddit Activity')
-    ax4.set_title('Reddit Features Over Time')
+    ax4.set_ylabel('Telegram-derived Reddit Activity')
+    ax4.set_title('Telegram-derived Reddit Features Over Time')
     ax4.grid(True, alpha=0.3)
     ax4.legend()
     
-    # 5. P&L Distribution Enhanced
+    # 5. P&L Distribution Enhanced با Telegram analysis
     ax5 = axes[2, 0]
     if trade_history:
         pnl_values = [t['pnl'] * 100 for t in trade_history]
@@ -682,34 +745,41 @@ def generate_enhanced_visualizations(df: pd.DataFrame, trade_history: List[Dict]
         ax5.hist(pnl_values, bins=15, alpha=0.7, color='blue', label='All Trades', density=True)
         if sentiment_positive:
             ax5.hist(sentiment_positive, bins=10, alpha=0.5, color='green', 
-                    label='Positive Sentiment', density=True)
+                    label='Positive Telegram Sentiment', density=True)
         if sentiment_negative:
             ax5.hist(sentiment_negative, bins=10, alpha=0.5, color='red', 
-                    label='Negative Sentiment', density=True)
+                    label='Negative Telegram Sentiment', density=True)
         
         ax5.axvline(x=0, color='black', linestyle='--', linewidth=2)
     
     ax5.set_xlabel('Profit/Loss (%)')
     ax5.set_ylabel('Density')
-    ax5.set_title('Enhanced P&L Distribution by Sentiment')
+    ax5.set_title('Enhanced P&L Distribution by Telegram Sentiment')
     ax5.grid(True, alpha=0.3)
     ax5.legend()
     
-    # 6. Feature Effectiveness Summary
+    # 6. 🔧 اصلاح 4: Feature Effectiveness Summary (Telegram-based)
     ax6 = axes[2, 1]
     effectiveness_data = {
         'Technical': 0.6,  # Base effectiveness
-        'Sentiment': sentiment_impact.get('sentiment_effectiveness', 0) if SENTIMENT_ANALYSIS_ENABLED else 0,
-        'Reddit': reddit_impact.get('reddit_effectiveness', 0) if REDDIT_ANALYSIS_ENABLED else 0
+        'Telegram Sentiment': telegram_impact.get('sentiment_effectiveness', 0) if SENTIMENT_ANALYSIS_ENABLED else 0,
+        'Derived Reddit': telegram_impact.get('telegram_reddit_effectiveness', 0) if TELEGRAM_REDDIT_ANALYSIS_ENABLED else 0
     }
+    
+    # اگر mapping تشخیص داده شده، combined effectiveness نمایش دهیم
+    if telegram_impact.get('telegram_mapping_confirmed', False):
+        effectiveness_data = {
+            'Technical': 0.6,
+            'Telegram Combined': telegram_impact.get('combined_effectiveness', 0)
+        }
     
     categories = list(effectiveness_data.keys())
     values = list(effectiveness_data.values())
-    colors = ['blue', 'purple', 'red']
+    colors = ['blue', 'purple', 'red'] if len(categories) == 3 else ['blue', 'purple']
     
-    bars = ax6.bar(categories, values, color=colors, alpha=0.7)
+    bars = ax6.bar(categories, values, color=colors[:len(categories)], alpha=0.7)
     ax6.set_ylabel('Effectiveness Score')
-    ax6.set_title('Feature Category Effectiveness')
+    ax6.set_title('Telegram-based Feature Category Effectiveness')
     ax6.set_ylim(0, 1)
     
     # Add value labels on bars
@@ -719,41 +789,42 @@ def generate_enhanced_visualizations(df: pd.DataFrame, trade_history: List[Dict]
                 f'{value:.2%}', ha='center', va='bottom')
     
     plt.tight_layout()
-    chart_filename = os.path.join(report_path, f"enhanced_backtest_analysis_{symbol.replace('/', '-')}_{timeframe}_{timestamp_str}.png")
+    chart_filename = os.path.join(report_path, f"enhanced_telegram_backtest_analysis_{symbol.replace('/', '-')}_{timeframe}_{timestamp_str}.png")
     plt.savefig(chart_filename, dpi=300, bbox_inches='tight')
     plt.close()
     
-    logging.info(f"Enhanced analysis chart saved to '{chart_filename}'")
+    logging.info(f"Enhanced Telegram-based analysis chart saved to '{chart_filename}'")
 
 def select_enhanced_symbols_and_timeframes(df_full: pd.DataFrame) -> Tuple[List[str], List[str]]:
-    """Enhanced selection با data quality information"""
+    """Enhanced selection با Telegram-based data quality information"""
     # Symbol selection with quality info
     available_symbols = df_full.index.get_level_values('symbol').unique().tolist()
-    print("\n📊 Enhanced Available Symbols with Data Quality:")
-    print("-" * 70)
+    print("\n📊 Enhanced Available Symbols with Telegram-based Data Quality:")
+    print("-" * 80)
     
     for i, sym in enumerate(available_symbols, 1):
         try:
             # بررسی کیفیت داده برای هر symbol
             sample_data = df_full.loc[sym].iloc[:100]  # نمونه کوچک
-            quality = analyze_enhanced_data_quality(sample_data)
+            quality = analyze_telegram_enhanced_data_quality(sample_data)
             quality_emoji = "🟢" if quality['quality_score'] > 0.8 else "🟡" if quality['quality_score'] > 0.6 else "🔴"
+            mapping_emoji = "📱" if quality['telegram_mapping_detected'] else "❓"
             
             print(f"{i:3d}. {sym:<12} {quality_emoji} Quality: {quality['quality_score']:.0%} "
-                  f"(S:{quality['sentiment_coverage']:.0%} R:{quality['reddit_coverage']:.0%})")
+                  f"(S:{quality['sentiment_coverage']:.0%} TR:{quality['telegram_reddit_coverage']:.0%} {mapping_emoji})")
         except:
             print(f"{i:3d}. {sym:<12} ❓ Quality: Unknown")
     
     print(f"{len(available_symbols)+1:3d}. ALL SYMBOLS")
-    print("-" * 70)
-    print("Legend: S=Sentiment Coverage, R=Reddit Coverage")
+    print("-" * 80)
+    print("Legend: S=Sentiment Coverage, TR=Telegram-Reddit Coverage, 📱=Mapping Detected")
     
     symbol_choice = input("\n💱 Enter Enhanced symbol number(s) or name (e.g., 1 or BTC/USDT or 1,3,5): ").strip()
     
     selected_symbols = []
     if symbol_choice == str(len(available_symbols)+1) or symbol_choice.upper() == 'ALL':
         selected_symbols = available_symbols
-        print(f"✅ Selected ALL {len(selected_symbols)} symbols for Enhanced analysis")
+        print(f"✅ Selected ALL {len(selected_symbols)} symbols for Enhanced Telegram analysis")
     elif ',' in symbol_choice:
         try:
             indices = [int(x.strip()) - 1 for x in symbol_choice.split(',') if x.strip().isdigit()]
@@ -797,7 +868,7 @@ def select_enhanced_symbols_and_timeframes(df_full: pd.DataFrame) -> Tuple[List[
     selected_timeframes = []
     if tf_choice == str(len(first_symbol_tf)+1) or tf_choice.upper() == 'ALL':
         selected_timeframes = first_symbol_tf
-        print(f"✅ Selected ALL {len(selected_timeframes)} timeframes for Enhanced analysis")
+        print(f"✅ Selected ALL {len(selected_timeframes)} timeframes for Enhanced Telegram analysis")
     elif ',' in tf_choice:
         try:
             indices = [int(x.strip()) - 1 for x in tf_choice.split(',') if x.strip().isdigit()]
@@ -825,9 +896,9 @@ def select_enhanced_symbols_and_timeframes(df_full: pd.DataFrame) -> Tuple[List[
     return selected_symbols, selected_timeframes
 
 def run_enhanced_backtest_complete(features_path: str, models_path: str):
-    """اجرای کامل Enhanced Backtest v3.0"""
+    """اجرای کامل Enhanced Backtest v3.1 با Telegram-based features"""
     logging.info("="*80)
-    logging.info("Starting Enhanced Backtest Strategy v3.0 - Complete Integration")
+    logging.info("Starting Enhanced Telegram-based Backtest Strategy v3.1 - Complete Integration")
     logging.info("="*80)
     
     try:
@@ -866,7 +937,7 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
         # بارگذاری Enhanced model package
         model, optimal_threshold, model_info = load_enhanced_model_package(model_file)
         scaler = joblib.load(scaler_file)
-        logging.info(f"✅ Enhanced model and scaler loaded successfully")
+        logging.info(f"✅ Enhanced Telegram-based model and scaler loaded successfully")
         
     except Exception as e:
         logging.error(f"❌ Error loading Enhanced files: {e}")
@@ -886,7 +957,7 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
         for timeframe in selected_timeframes:
             try:
                 logging.info(f"\n{'='*60}")
-                logging.info(f"Enhanced Backtesting: {symbol} on {timeframe}")
+                logging.info(f"Enhanced Telegram-based Backtesting: {symbol} on {timeframe}")
                 logging.info(f"{'='*60}")
                 
                 # دریافت داده برای symbol/timeframe
@@ -897,9 +968,9 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                 
                 logging.info(f"📊 Enhanced data records: {len(df)}")
                 
-                # === تحلیل Enhanced Data Quality ===
-                data_quality = analyze_enhanced_data_quality(df)
-                logging.info(f"📈 Enhanced data quality score: {data_quality['quality_score']:.2%}")
+                # === 🔧 اصلاح 1: تحلیل Enhanced Data Quality (Telegram-based) ===
+                data_quality = analyze_telegram_enhanced_data_quality(df)
+                logging.info(f"📈 Enhanced Telegram-based data quality score: {data_quality['quality_score']:.2%}")
                 
                 # === مقداردهی Enhanced Backtest Variables ===
                 capital = INITIAL_CAPITAL
@@ -947,7 +1018,7 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                 
                 # === Enhanced Trading Simulation ===
                 sentiment_features = data_quality['sentiment_features']
-                reddit_features = data_quality['reddit_features']
+                telegram_reddit_features = data_quality['telegram_derived_reddit_features']  # 🔧 اصلاح
                 
                 for i in range(len(df) - TARGET_FUTURE_PERIODS):
                     current_row = df.iloc[i]
@@ -958,14 +1029,14 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                         # Additional Enhanced filters
                         enhanced_entry = True
                         
-                        # Sentiment filter (اختیاری)
+                        # Telegram Sentiment filter (اختیاری)
                         if SENTIMENT_ANALYSIS_ENABLED and sentiment_features:
                             main_sentiment = sentiment_features[0] if sentiment_features else None
                             if main_sentiment and main_sentiment in df.columns:
                                 sentiment_score = current_row[main_sentiment]
                                 if sentiment_score < -0.1:  # خیلی منفی
                                     enhanced_entry = False
-                                    logging.debug(f"⚠️ Entry blocked by negative sentiment: {sentiment_score:.4f}")
+                                    logging.debug(f"⚠️ Entry blocked by negative Telegram sentiment: {sentiment_score:.4f}")
                         
                         if enhanced_entry:
                             position_open = True
@@ -995,21 +1066,21 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                             exit_condition = True
                             exit_reason = "Enhanced signal reversed"
                         
-                        # === Enhanced Exit Conditions ===
+                        # === Enhanced Exit Conditions (Telegram-based) ===
                         if SENTIMENT_ANALYSIS_ENABLED and sentiment_features and not exit_condition:
                             main_sentiment = sentiment_features[0] if sentiment_features else None
                             if main_sentiment and main_sentiment in df.columns:
                                 current_sentiment = current_row[main_sentiment]
                                 if current_sentiment < -0.15 and i > entry_index + 5:  # Strong negative sentiment
                                     exit_condition = True
-                                    exit_reason = "Negative sentiment exit"
+                                    exit_reason = "Negative Telegram sentiment exit"
                         
                         if exit_condition:
                             exit_price = current_row['close']
                             exit_date = current_date
                             pnl_percent = (exit_price - entry_price) / entry_price
                             
-                            # === Enhanced Trade Record ===
+                            # === 🔧 اصلاح 3: Enhanced Trade Record (Telegram-based) ===
                             trade_record = {
                                 'entry_date': entry_date,
                                 'entry_price': entry_price,
@@ -1019,16 +1090,17 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                                 'exit_reason': exit_reason
                             }
                             
-                            # Enhanced: Add sentiment and Reddit info
+                            # Enhanced: Add Telegram sentiment info
                             if SENTIMENT_ANALYSIS_ENABLED and sentiment_features:
                                 main_sentiment = sentiment_features[0] if sentiment_features else None
                                 if main_sentiment and main_sentiment in df.columns:
                                     trade_record['sentiment_at_entry'] = df.loc[entry_date, main_sentiment] if entry_date in df.index else 0
                             
-                            if REDDIT_ANALYSIS_ENABLED and reddit_features:
-                                main_reddit = reddit_features[0] if reddit_features else None
-                                if main_reddit and main_reddit in df.columns:
-                                    trade_record['reddit_at_entry'] = df.loc[entry_date, main_reddit] if entry_date in df.index else 0
+                            # 🔧 اصلاح 3: Add Telegram-derived Reddit info
+                            if TELEGRAM_REDDIT_ANALYSIS_ENABLED and telegram_reddit_features:
+                                main_telegram_reddit = telegram_reddit_features[0] if telegram_reddit_features else None
+                                if main_telegram_reddit and main_telegram_reddit in df.columns:
+                                    trade_record['telegram_reddit_at_entry'] = df.loc[entry_date, main_telegram_reddit] if entry_date in df.index else 0
                             
                             trade_history.append(trade_record)
                             
@@ -1066,9 +1138,8 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                 else:
                     sharpe_ratio = avg_win = avg_loss = profit_factor = 0
                 
-                # === Enhanced Impact Analysis ===
-                sentiment_impact = analyze_sentiment_impact(trade_history, df)
-                reddit_impact = analyze_reddit_impact(trade_history, df)
+                # === 🔧 اصلاح 2: Enhanced Impact Analysis (یکپارچه) ===
+                telegram_impact = analyze_telegram_sentiment_and_reddit_impact(trade_history, df)
                 
                 # === Enhanced Results Storage ===
                 enhanced_result = {
@@ -1081,8 +1152,10 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                     'max_drawdown': max_drawdown,
                     'sharpe_ratio': sharpe_ratio,
                     'data_quality': data_quality['quality_score'],
-                    'sentiment_effectiveness': sentiment_impact.get('sentiment_effectiveness', 0),
-                    'reddit_effectiveness': reddit_impact.get('reddit_effectiveness', 0)
+                    'sentiment_effectiveness': telegram_impact.get('sentiment_effectiveness', 0),
+                    'telegram_reddit_effectiveness': telegram_impact.get('telegram_reddit_effectiveness', 0),  # 🔧 اصلاح
+                    'combined_effectiveness': telegram_impact.get('combined_effectiveness', 0),  # 🔧 اصلاح
+                    'telegram_mapping_detected': data_quality.get('telegram_mapping_detected', False)  # 🔧 اصلاح
                 }
                 enhanced_results.append(enhanced_result)
                 
@@ -1104,28 +1177,30 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                     'trade_history': trade_history
                 }
                 
-                # === Enhanced Console Output ===
+                # === 🔧 اصلاح 5: Enhanced Console Output (Telegram-based) ===
                 print(f"\n{'='*50}")
-                print(f"📊 Enhanced Results: {symbol} ({timeframe})")
+                print(f"📊 Enhanced Telegram Results: {symbol} ({timeframe})")
                 print(f"{'='*50}")
                 print(f"💰 Return: {total_return:.2%}")
                 print(f"📈 Trades: {num_trades} (Win Rate: {win_rate:.1%})")
                 print(f"💵 Final Capital: ${final_capital:,.2f}")
                 print(f"📉 Max Drawdown: {max_drawdown:.2%}")
                 print(f"📊 Sharpe Ratio: {sharpe_ratio:.2f}")
-                print(f"🎭 Sentiment Effectiveness: {sentiment_impact.get('sentiment_effectiveness', 0):.1%}")
-                print(f"🔴 Reddit Effectiveness: {reddit_impact.get('reddit_effectiveness', 0):.1%}")
+                print(f"🎭 Telegram Sentiment Effectiveness: {telegram_impact.get('sentiment_effectiveness', 0):.1%}")
+                print(f"📱 Telegram-derived Reddit Effectiveness: {telegram_impact.get('telegram_reddit_effectiveness', 0):.1%}")
+                print(f"🔗 Combined Effectiveness: {telegram_impact.get('combined_effectiveness', 0):.1%}")
                 print(f"📈 Data Quality: {data_quality['quality_score']:.1%}")
+                print(f"📱 Telegram Mapping: {'Detected' if data_quality.get('telegram_mapping_detected') else 'Not Detected'}")
                 
                 # === Enhanced Report Generation ===
                 generate_enhanced_report_file(report_data, symbol, timeframe, 
-                                            data_quality, sentiment_impact, reddit_impact, model_info)
+                                            data_quality, telegram_impact, model_info)
                 
-                # === Enhanced Visualizations ===
+                # === 🔧 اصلاح 4: Enhanced Visualizations (Telegram-based) ===
                 try:
-                    generate_enhanced_visualizations(df, trade_history, symbol, timeframe, 
-                                                   report_subfolder_path, data_quality, 
-                                                   sentiment_impact, reddit_impact)
+                    generate_enhanced_telegram_visualizations(df, trade_history, symbol, timeframe, 
+                                                            report_subfolder_path, data_quality, 
+                                                            telegram_impact)
                 except Exception as viz_error:
                     logging.warning(f"Enhanced visualization error for {symbol}/{timeframe}: {viz_error}")
                 
@@ -1136,45 +1211,52 @@ def run_enhanced_backtest_complete(features_path: str, models_path: str):
                 logging.error(f"Enhanced processing error for {symbol}/{timeframe}: {e}")
                 continue
     
-    # === Enhanced Overall Summary ===
+    # === 🔧 اصلاح 5: Enhanced Overall Summary (Telegram-based) ===
     if len(enhanced_results) > 1:
-        print("\n" + "="*90)
-        print("📊 ENHANCED BACKTEST OVERALL SUMMARY v3.0")
-        print("="*90)
+        print("\n" + "="*100)
+        print("📊 ENHANCED TELEGRAM-BASED BACKTEST OVERALL SUMMARY v3.1")
+        print("="*100)
         print(f"{'Symbol':<12} {'TF':<4} {'Return':<8} {'Trades':<6} {'Win%':<6} {'Drawdown':<9} "
-              f"{'Sharpe':<6} {'Quality':<7} {'Sent%':<5} {'Red%':<5}")
-        print("-"*90)
+              f"{'Sharpe':<6} {'Quality':<7} {'Sent%':<5} {'T-Red%':<6} {'Combined%':<9} {'Map':<3}")
+        print("-"*100)
         
         total_return_sum = 0
         for r in enhanced_results:
+            mapping_indicator = "✅" if r['telegram_mapping_detected'] else "❌"
             print(f"{r['symbol']:<12} {r['timeframe']:<4} "
                   f"{r['total_return']:>7.2%} {r['num_trades']:>5} "
                   f"{r['win_rate']:>5.1%} {r['max_drawdown']:>8.2%} "
                   f"{r['sharpe_ratio']:>5.2f} {r['data_quality']:>6.1%} "
-                  f"{r['sentiment_effectiveness']:>4.1%} {r['reddit_effectiveness']:>4.1%}")
+                  f"{r['sentiment_effectiveness']:>4.1%} {r['telegram_reddit_effectiveness']:>5.1%} "
+                  f"{r['combined_effectiveness']:>8.1%} {mapping_indicator:<3}")
             total_return_sum += r['total_return']
         
-        print("-"*90)
+        print("-"*100)
         avg_return = total_return_sum / len(enhanced_results) if enhanced_results else 0
         avg_quality = np.mean([r['data_quality'] for r in enhanced_results])
         avg_sentiment = np.mean([r['sentiment_effectiveness'] for r in enhanced_results])
-        avg_reddit = np.mean([r['reddit_effectiveness'] for r in enhanced_results])
+        avg_telegram_reddit = np.mean([r['telegram_reddit_effectiveness'] for r in enhanced_results])
+        avg_combined = np.mean([r['combined_effectiveness'] for r in enhanced_results])
+        mapping_percentage = np.mean([r['telegram_mapping_detected'] for r in enhanced_results]) * 100
         
         print(f"Average Return: {avg_return:.2%}")
         print(f"Average Quality: {avg_quality:.1%}")
-        print(f"Average Sentiment Effectiveness: {avg_sentiment:.1%}")
-        print(f"Average Reddit Effectiveness: {avg_reddit:.1%}")
-        print("="*90)
+        print(f"Average Telegram Sentiment Effectiveness: {avg_sentiment:.1%}")
+        print(f"Average Telegram-derived Reddit Effectiveness: {avg_telegram_reddit:.1%}")
+        print(f"Average Combined Effectiveness: {avg_combined:.1%}")
+        print(f"Telegram Mapping Detection Rate: {mapping_percentage:.0f}%")
+        print("="*100)
     
-    print(f"\n✅ Enhanced Backtest v3.0 completed successfully!")
+    print(f"\n✅ Enhanced Telegram-based Backtest v3.1 completed successfully!")
     print(f"📁 All Enhanced reports and charts saved to:")
     print(f"   📂 {report_subfolder_path}")
-    print(f"\n🚀 Enhanced Features Used:")
+    print(f"\n🚀 Enhanced Telegram-based Features Used:")
     print(f"   ✅ 58+ Features Support")
-    print(f"   ✅ Sentiment Analysis Integration")
-    print(f"   ✅ Reddit Features Analysis")
-    print(f"   ✅ Enhanced Data Quality Validation")
-    print(f"   ✅ Multi-source Performance Metrics")
+    print(f"   ✅ Telegram Sentiment Analysis Integration")
+    print(f"   ✅ Telegram-derived Reddit Features Analysis")
+    print(f"   ✅ Enhanced Data Quality Validation (Telegram-based)")
+    print(f"   ✅ Multi-source Performance Metrics (Telegram-based)")
+    print(f"   ✅ Unified Sentiment-Reddit Impact Analysis")
 
 def run_simple_backtest_legacy(features_path: str, models_path: str):
     """Legacy simple backtest - backward compatibility"""
@@ -1375,13 +1457,13 @@ def run_simple_backtest_legacy(features_path: str, models_path: str):
 
 if __name__ == '__main__':
     print("\n" + "="*80)
-    print("🚀 Enhanced Advanced Backtesting System v3.0")
-    print("📊 Complete Integration with Sentiment & Reddit Analysis")
-    print("🔧 58+ Features Support with Enhanced Models v6.0+")
+    print("🚀 Enhanced Advanced Backtesting System v3.1")
+    print("📱 Complete Integration with Telegram-based Sentiment & Reddit Analysis")
+    print("🔧 58+ Features Support with Enhanced Models v6.1+")
     print("="*80)
     
     choice = input("\nSelect Enhanced mode:\n"
-                  "1. Enhanced Complete Backtest v3.0 (recommended)\n"
+                  "1. Enhanced Complete Backtest v3.1 (Telegram-based - recommended)\n"
                   "2. Legacy Simple Backtest (backward compatibility)\n"
                   "Choice (1/2): ").strip()
     
@@ -1389,5 +1471,5 @@ if __name__ == '__main__':
         print("\n🔄 Running Legacy Mode...")
         run_simple_backtest_legacy(FEATURES_PATH, MODELS_PATH)
     else:
-        print("\n🚀 Running Enhanced Complete Mode v3.0...")
+        print("\n🚀 Running Enhanced Telegram-based Complete Mode v3.1...")
         run_enhanced_backtest_complete(FEATURES_PATH, MODELS_PATH)
