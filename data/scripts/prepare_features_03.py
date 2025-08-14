@@ -2,32 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-اسکریپت نهایی مهندسی ویژگی (فاز ۳، گام الف) - نسخه اصلاح شده کامل
-
-🔧 تغییرات مهم این نسخه:
-- ✅ سازگاری کامل با فایل‌های 01 و 02 اصلاح شده
-- ✅ پشتیبانی کامل از Broadcasting sentiment structure
-- ✅ اضافه کردن Telegram features support (جایگزین Reddit)
-- ✅ رفع مشکل PSAR calculation و count مشکل 57/58
-- ✅ حل pandas deprecation warnings
-- ✅ بهبود error handling و fallback mechanisms  
-- ✅ بهینه‌سازی memory management
-- ✅ پشتیبانی از multi-source sentiment (GNews, NewsAPI, CoinGecko, RSS, Telegram)
-- ✅ بهبود comprehensive logging
-- ✅ اصلاح MFI calculation warnings
-- ✅ بهبود feature alignment و time-series processing
-- 🆕 تشخیص صحیح ستون‌های sentiment_compound_mean از فایل 02
-- 🆕 نگاشت صحیح Broadcasting sentiment به Point-in-Time
-- 🆕 جایگزینی Reddit features با Telegram features
-- 🆕 بهبود enhance_sentiment_features برای سازگاری کامل
+اسکریپت نهایی مهندسی ویژگی (فاز ۳، گام الف) - نسخه اصلاح شده
 
 تغییرات اصلی:
-- حل مشکل sentiment_score = 0 با خواندن صحیح از ساختار Broadcasting
-- اضافه کردن Telegram-specific features به جای Reddit
-- رفع مشکل PSAR missing
-- بهبود multi-source sentiment processing
-- اصلاح pandas compatibility issues
-- 🆕 تطبیق کامل با خروجی فایل 02 اصلاح شده
+- اصلاح خواندن فایل‌های sentiment جدید (symbol-level aggregation)
+- حل مشکل KeyError در ستون‌های sentiment
+- سازگاری با ساختار Broadcasting sentiment
+- محاسبه صحیح ویژگی‌های sentiment بر اساس داده‌های موجود
+- بهبود error handling و fallback mechanisms
 """
 import os
 import glob
@@ -35,15 +17,10 @@ import pandas as pd
 import pandas_ta as ta
 import logging
 import configparser
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any
 import numpy as np
 import gc
 from datetime import datetime
-import warnings
-
-# تنظیم warnings
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning)
 
 # بخش خواندن پیکربندی
 config = configparser.ConfigParser()
@@ -71,7 +48,7 @@ log_filename = os.path.join(log_subfolder_path, f"log_{pd.Timestamp.now().strfti
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler(log_filename, encoding='utf-8'), logging.StreamHandler()])
 
-# === پارامترهای پویا و قابل تنظیم (بهبود یافته) ===
+# === پارامترهای پویا و قابل تنظیم ===
 INDICATOR_PARAMS = {
     # پارامترهای اصلی
     'rsi_length': 14,
@@ -105,21 +82,13 @@ INDICATOR_PARAMS = {
     'mfi_length': 14,
     'ad_enabled': True,
     
-    # === پارامترهای احساسات بهبود یافته ===
+    # پارامترهای احساسات جدید
     'sentiment_ma_short': 7,
     'sentiment_ma_long': 14,
     'sentiment_momentum_period': 24,  # 24 ساعت
     
-    # 🆕 === پارامترهای Telegram (جایگزین Reddit) ===
-    'telegram_sentiment_ma': 12,  # میانگین متحرک telegram sentiment
-    'telegram_momentum_period': 24,  # دوره momentum برای telegram
-    
     # حداقل داده مورد نیاز
     'min_data_points': 100,
-    
-    # === پارامترهای PSAR (اصلاح شده) ===
-    'psar_af': 0.02,
-    'psar_max_af': 0.2,
 }
 
 # پارامترهای مهندسی ویژگی و هدف
@@ -141,18 +110,9 @@ def log_progress(current: int, total: int, group_name: str = ""):
         if current % max(1, total // 20) == 0:  # هر 5% گزارش
             logging.info(f"🔄 پیشرفت: {progress:.1f}% ({current}/{total}) - {group_name}")
 
-def safe_numeric_conversion(series: pd.Series, name: str) -> pd.Series:
-    """تبدیل ایمن به numeric با مدیریت خطا"""
-    try:
-        return pd.to_numeric(series, errors='coerce')
-    except Exception as e:
-        logging.warning(f"خطا در تبدیل {name} به numeric: {e}")
-        return series.fillna(0)
-
 def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
     این تابع تمام اندیکاتورها و ویژگی‌های پیشرفته را برای یک گروه داده محاسبه می‌کند.
-    اصلاح شده برای سازگاری کامل با فایل‌های 01 و 02
     """
     global GLOBAL_COUNTER, TOTAL_GROUPS
     GLOBAL_COUNTER += 1
@@ -164,12 +124,6 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
     if len(group) < INDICATOR_PARAMS['min_data_points']:
         logging.debug(f"گروه {group.name} داده کافی ندارد ({len(group)} < {INDICATOR_PARAMS['min_data_points']})")
         return None
-
-    # اطمینان از تبدیل صحیح انواع داده
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
-    for col in numeric_columns:
-        if col in group.columns:
-            group[col] = safe_numeric_conversion(group[col], col)
 
     # === بخش ۱: اندیکاتورهای ترند و قیمت ===
     try:
@@ -198,10 +152,7 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
             group['bb_middle'] = bbands[f'BBM_{INDICATOR_PARAMS["bb_length"]}_{INDICATOR_PARAMS["bb_std"]}']
             group['bb_lower'] = bbands[f'BBL_{INDICATOR_PARAMS["bb_length"]}_{INDICATOR_PARAMS["bb_std"]}']
             # محاسبه موقعیت قیمت در کانال Bollinger Bands
-            bb_range = group['bb_upper'] - group['bb_lower']
-            group['bb_position'] = np.where(bb_range != 0, 
-                                          (group['close'] - group['bb_lower']) / bb_range, 
-                                          0.5)
+            group['bb_position'] = (group['close'] - group['bb_lower']) / (group['bb_upper'] - group['bb_lower'])
     except Exception as e:
         log_indicator_error('Bollinger Bands', group.name, e)
 
@@ -210,9 +161,7 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
         group['atr'] = ta.atr(group['high'], group['low'], group['close'], 
                              length=INDICATOR_PARAMS['atr_length'])
         # محاسبه ATR نرمال شده (ATR به نسبت قیمت)
-        group['atr_percent'] = np.where(group['close'] != 0, 
-                                      (group['atr'] / group['close']) * 100, 
-                                      0)
+        group['atr_percent'] = (group['atr'] / group['close']) * 100
     except Exception as e:
         log_indicator_error('ATR', group.name, e)
 
@@ -223,20 +172,15 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
     except Exception as e:
         log_indicator_error('Historical Volatility', group.name, e)
 
-    # === بخش ۳: اندیکاتورهای مبتنی بر حجم (Volume-Based) - اصلاح شده ===
+    # === بخش ۳: اندیکاتورهای مبتنی بر حجم (Volume-Based) ===
     try:
         # محاسبه VWAP دستی برای جلوگیری از خطای MultiIndex
         typical_price = (group['high'] + group['low'] + group['close']) / 3
         vwap_numerator = (typical_price * group['volume']).cumsum()
         vwap_denominator = group['volume'].cumsum()
-        # جلوگیری از تقسیم بر صفر
-        group['vwap'] = np.where(vwap_denominator != 0, 
-                               vwap_numerator / vwap_denominator, 
-                               typical_price)
+        group['vwap'] = vwap_numerator / vwap_denominator
         # محاسبه انحراف قیمت از VWAP
-        group['vwap_deviation'] = np.where(group['vwap'] != 0,
-                                         ((group['close'] - group['vwap']) / group['vwap']) * 100,
-                                         0)
+        group['vwap_deviation'] = ((group['close'] - group['vwap']) / group['vwap']) * 100
     except Exception as e:
         log_indicator_error('VWAP', group.name, e)
 
@@ -244,19 +188,12 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
         try:
             group['obv'] = ta.obv(group['close'], group['volume'])
             # محاسبه تغییرات OBV
-            group['obv_change'] = group['obv'].pct_change().fillna(0)
+            group['obv_change'] = group['obv'].pct_change()
         except Exception as e:
             log_indicator_error('OBV', group.name, e)
 
     try:
-        # === اصلاح MFI calculation برای حل warning ===
-        # اطمینان از نوع داده صحیح
-        high_safe = safe_numeric_conversion(group['high'], 'high')
-        low_safe = safe_numeric_conversion(group['low'], 'low')
-        close_safe = safe_numeric_conversion(group['close'], 'close')
-        volume_safe = safe_numeric_conversion(group['volume'], 'volume')
-        
-        group['mfi'] = ta.mfi(high_safe, low_safe, close_safe, volume_safe, 
+        group['mfi'] = ta.mfi(group['high'], group['low'], group['close'], group['volume'], 
                              length=INDICATOR_PARAMS['mfi_length'])
     except Exception as e:
         log_indicator_error('MFI', group.name, e)
@@ -302,8 +239,8 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
         group['ema_medium_above_long'] = (group['ema_medium'] > group['ema_long']).astype(int)
         
         # محاسبه شیب EMA (ترند)
-        group['ema_short_slope'] = group['ema_short'].pct_change(periods=5).fillna(0)
-        group['ema_medium_slope'] = group['ema_medium'].pct_change(periods=5).fillna(0)
+        group['ema_short_slope'] = group['ema_short'].pct_change(periods=5)
+        group['ema_medium_slope'] = group['ema_medium'].pct_change(periods=5)
     except Exception as e:
         log_indicator_error('EMA', group.name, e)
 
@@ -322,68 +259,41 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
     # === بخش ۶: ویژگی‌های قیمت خام ===
     try:
         # محاسبه بازده‌های مختلف
-        group['return_1'] = group['close'].pct_change(1).fillna(0)
-        group['return_5'] = group['close'].pct_change(5).fillna(0)
-        group['return_10'] = group['close'].pct_change(10).fillna(0)
+        group['return_1'] = group['close'].pct_change(1)
+        group['return_5'] = group['close'].pct_change(5)
+        group['return_10'] = group['close'].pct_change(10)
         
         # محاسبه میانگین بازده
-        group['avg_return_5'] = group['return_1'].rolling(window=5, min_periods=1).mean()
-        group['avg_return_10'] = group['return_1'].rolling(window=10, min_periods=1).mean()
+        group['avg_return_5'] = group['return_1'].rolling(window=5).mean()
+        group['avg_return_10'] = group['return_1'].rolling(window=10).mean()
         
         # محاسبه High-Low ratio
-        group['hl_ratio'] = np.where(group['close'] != 0,
-                                   (group['high'] - group['low']) / group['close'],
-                                   0)
+        group['hl_ratio'] = (group['high'] - group['low']) / group['close']
         
         # محاسبه موقعیت close در محدوده high-low
-        hl_range = group['high'] - group['low']
-        group['close_position'] = np.where(hl_range != 0,
-                                         (group['close'] - group['low']) / hl_range,
-                                         0.5)
+        group['close_position'] = (group['close'] - group['low']) / (group['high'] - group['low'])
         
         # حجم نرمال شده
-        group['volume_ma'] = group['volume'].rolling(window=20, min_periods=1).mean()
-        group['volume_ratio'] = np.where(group['volume_ma'] != 0,
-                                       group['volume'] / group['volume_ma'],
-                                       1.0)
+        group['volume_ma'] = group['volume'].rolling(window=20).mean()
+        group['volume_ratio'] = group['volume'] / group['volume_ma']
         
     except Exception as e:
         log_indicator_error('Price Features', group.name, e)
 
-    # === بخش ۷: اندیکاتورهای پیشرفته (اصلاح شده و تکمیل شده) ===
+    # === بخش ۷: اندیکاتورهای پیشرفته (اختیاری) ===
     try:
-        # === Parabolic SAR با اصلاح کامل ===
-        psar_result = ta.psar(group['high'], group['low'], group['close'], 
-                             af0=INDICATOR_PARAMS['psar_af'], 
-                             af=INDICATOR_PARAMS['psar_af'], 
-                             max_af=INDICATOR_PARAMS['psar_max_af'])
+        # Parabolic SAR با بررسی نوع نتیجه
+        psar_result = ta.psar(group['high'], group['low'], group['close'])
         if psar_result is not None:
             if isinstance(psar_result, pd.DataFrame):
                 # اگر DataFrame است، ستون اول را انتخاب می‌کنیم
-                if len(psar_result.columns) > 0:
-                    group['psar'] = psar_result.iloc[:, 0]
-                else:
-                    group['psar'] = group['close']  # fallback
+                group['psar'] = psar_result.iloc[:, 0]
             else:
                 # اگر Series است
                 group['psar'] = psar_result
-            
-            # اطمینان از وجود PSAR
-            if 'psar' in group.columns:
-                group['price_above_psar'] = (group['close'] > group['psar']).astype(int)
-            else:
-                group['psar'] = group['close']  # fallback
-                group['price_above_psar'] = 0
-        else:
-            # اگر PSAR محاسبه نشد، مقادیر پیش‌فرض
-            group['psar'] = group['close']
-            group['price_above_psar'] = 0
-            
+            group['price_above_psar'] = (group['close'] > group['psar']).astype(int)
     except Exception as e:
         log_indicator_error('Parabolic SAR', group.name, e)
-        # fallback در صورت خطا
-        group['psar'] = group['close']
-        group['price_above_psar'] = 0
 
     try:
         # ADX با بررسی نوع نتیجه
@@ -398,246 +308,91 @@ def apply_features(group: pd.DataFrame) -> Optional[pd.DataFrame]:
             else:
                 # اگر Series است
                 group['adx'] = adx_result
-        else:
-            group['adx'] = 50  # مقدار پیش‌فرض برای ADX
 
     except Exception as e:
         log_indicator_error('ADX', group.name, e)
-        group['adx'] = 50  # مقدار پیش‌فرض
 
-    # === بخش ۸: پردازش ویژگی‌های احساسات موجود (اصلاح شده) ===
-    try:
-        # 🆕 بررسی وجود ستون‌های احساسات Broadcasting از فایل 02
-        broadcasting_sentiment_cols = [col for col in group.columns if 'sentiment' in col and any(x in col for x in ['compound_mean', 'positive_mean', 'negative_mean', 'neutral_mean'])]
-        direct_sentiment_cols = [col for col in group.columns if col in ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']]
-        
-        # اگر ستون‌های مستقیم وجود دارند، از آن‌ها استفاده کن
-        if direct_sentiment_cols:
-            logging.debug("✅ ستون‌های مستقیم احساسات یافت شد")
-            # اطمینان از وجود همه ستون‌های مورد نیاز
-            for col in ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']:
-                if col not in group.columns:
-                    group[col] = 0
-        elif broadcasting_sentiment_cols:
-            logging.debug("✅ ستون‌های Broadcasting احساسات یافت شد - در حال نگاشت...")
-            # نگاشت ستون‌های Broadcasting به ستون‌های مورد انتظار
-            sentiment_mapping = {
-                'sentiment_compound_mean': 'sentiment_score',
-                'sentiment_positive_mean': 'sentiment_positive',  
-                'sentiment_negative_mean': 'sentiment_negative',
-                'sentiment_neutral_mean': 'sentiment_neutral',
-            }
-            
-            for broadcast_col, target_col in sentiment_mapping.items():
-                if broadcast_col in group.columns:
-                    group[target_col] = group[broadcast_col]
-                    logging.debug(f"نگاشت {broadcast_col} -> {target_col}")
-                else:
-                    group[target_col] = 0
-        else:
-            # اگر هیچ ستون احساساتی وجود ندارد، مقادیر پیش‌فرض تنظیم کن
-            logging.debug("⚠️ هیچ ستون احساساتی یافت نشد - تنظیم مقادیر پیش‌فرض")
-            for col in ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']:
-                group[col] = 0
-                
-        # 🆕 === پردازش Telegram Features (جایگزین Reddit) ===
-        telegram_features = ['telegram_prices', 'telegram_channel_type']
-        for feature in telegram_features:
-            if feature in group.columns:
-                # محاسبه میانگین متحرک برای Telegram features
-                if feature == 'telegram_prices':
-                    # تبدیل به numeric اگر امکان‌پذیر باشد
-                    group[f'{feature}_count'] = pd.to_numeric(group[feature], errors='coerce').fillna(0)
-                    group[f'{feature}_ma'] = group[f'{feature}_count'].rolling(
-                        window=INDICATOR_PARAMS['telegram_sentiment_ma'], min_periods=1
-                    ).mean()
-                    group[f'{feature}_momentum'] = group[f'{feature}_count'].diff(
-                        INDICATOR_PARAMS['telegram_momentum_period']).fillna(0)
-                
-                logging.debug(f"پردازش Telegram feature: {feature}")
-            else:
-                # اگر Telegram features موجود نیست، مقادیر پیش‌فرض
-                if feature == 'telegram_prices':
-                    group[f'{feature}_count'] = 0
-                    group[f'{feature}_ma'] = 0
-                    group[f'{feature}_momentum'] = 0
-        
-        # === جایگزینی Reddit Features با Telegram-based Features ===
-        # حالا که از Telegram استفاده می‌کنیم، Reddit features را با Telegram sentiment جایگزین می‌کنیم
-        if 'sentiment_score' in group.columns:
-            # استفاده از sentiment_score به عنوان Reddit score جایگزین (از Telegram می‌آید)
-            group['reddit_score'] = group['sentiment_score']  # جایگزینی
-            group['reddit_comments'] = group['sentiment_score'] * 10  # تخمین تعداد کامنت
-            
-            # محاسبه میانگین متحرک برای "Reddit" features
-            group['reddit_score_ma'] = group['reddit_score'].rolling(window=12, min_periods=1).mean()
-            group['reddit_comments_ma'] = group['reddit_comments'].rolling(window=12, min_periods=1).mean()
-            
-            # محاسبه momentum برای "Reddit" features
-            group['reddit_score_momentum'] = group['reddit_score'].diff(12).fillna(0)
-            group['reddit_comments_momentum'] = group['reddit_comments'].diff(12).fillna(0)
-            
-            logging.debug("✅ Reddit features جایگزین شدند با Telegram-based features")
-        else:
-            # اگر sentiment_score وجود ندارد، مقادیر پیش‌فرض
-            reddit_placeholder_features = ['reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma', 
-                                         'reddit_score_momentum', 'reddit_comments_momentum']
-            for feature in reddit_placeholder_features:
-                group[feature] = 0
-        
-        # === محاسبه source diversity اگر موجود باشد ===
-        if 'source_diversity' in group.columns:
-            max_diversity = group['source_diversity'].max()
-            group['source_diversity_normalized'] = group['source_diversity'] / max_diversity if max_diversity > 0 else 0
-        else:
-            group['source_diversity'] = 1
-            group['source_diversity_normalized'] = 0
-            
-    except Exception as e:
-        log_indicator_error('Sentiment and Telegram Features', group.name, e)
-        # اضافه کردن مقادیر پیش‌فرض در صورت خطا
-        default_sentiment_features = [
-            'sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral',
-            'reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma',
-            'reddit_score_momentum', 'reddit_comments_momentum', 'source_diversity', 'source_diversity_normalized'
-        ]
-        for feature in default_sentiment_features:
-            if feature not in group.columns:
-                group[feature] = 0
-
-    # === پاکسازی حافظه بهینه شده ===
-    if GLOBAL_COUNTER % 25 == 0:  # هر 25 گروه به جای 50
+    # پاکسازی حافظه
+    if GLOBAL_COUNTER % 50 == 0:  # هر 50 گروه
         gc.collect()
 
     return group
 
 def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: str) -> pd.DataFrame:
     """
-    تابع بهبود یافته برای اضافه کردن ویژگی‌های پیشرفته احساسات
-    🆕 سازگار کامل با ساختار Broadcasting جدید فایل 02 اصلاح شده
+    تابع اصلاح شده برای اضافه کردن ویژگی‌های پیشرفته احساسات
+    سازگار با ساختار جدید فایل‌های sentiment (Broadcasting)
     """
-    logging.info("🎭 شروع بهبود ویژگی‌های احساسات (نسخه کاملاً اصلاح شده برای فایل 02)...")
+    logging.info("🎭 شروع بهبود ویژگی‌های احساسات (نسخه اصلاح شده)...")
     
     try:
-        # 🆕 بررسی وجود ستون‌های احساسات مختلف
-        broadcasting_sentiment_cols = [col for col in df_features.columns if 'sentiment' in col and 'mean' in col]
-        direct_sentiment_cols = [col for col in df_features.columns if col in ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']]
-        telegram_cols = [col for col in df_features.columns if 'telegram' in col]
-        reddit_cols = [col for col in df_features.columns if 'reddit' in col]
-        source_cols = [col for col in df_features.columns if 'source' in col]
+        # بررسی اینکه آیا احساسات از قبل در فایل موجود است
+        existing_sentiment_cols = [col for col in df_features.columns if 'sentiment' in col]
         
-        logging.info(f"✅ ستون‌های Broadcasting sentiment یافت شده: {broadcasting_sentiment_cols}")
-        logging.info(f"✅ ستون‌های مستقیم sentiment یافت شده: {direct_sentiment_cols}")
-        logging.info(f"✅ ستون‌های Telegram یافت شده: {telegram_cols}")
-        logging.info(f"✅ ستون‌های Reddit یافت شده: {reddit_cols}")
-        logging.info(f"✅ ستون‌های Source یافت شده: {source_cols}")
-        
-        # 🆕 اولویت‌بندی: ابتدا ستون‌های مستقیم، سپس Broadcasting
-        if direct_sentiment_cols:
-            logging.info("✅ استفاده از ستون‌های مستقیم احساسات")
+        if existing_sentiment_cols:
+            logging.info(f"✅ احساسات از قبل موجود است: {existing_sentiment_cols}")
             
-            # اطمینان از وجود sentiment_score
-            if 'sentiment_score' in df_features.columns:
-                non_zero_sentiment = (df_features['sentiment_score'] != 0).sum()
-                total_records = len(df_features)
-                percentage = (non_zero_sentiment / total_records) * 100 if total_records > 0 else 0
-                logging.info(f"📊 آمار sentiment_score: {non_zero_sentiment:,} غیرصفر از {total_records:,} ({percentage:.1f}%)")
+            # استخراج sentiment_score از ستون‌های موجود
+            if 'sentiment_compound_mean' in df_features.columns:
+                df_features['sentiment_score'] = df_features['sentiment_compound_mean']
+                logging.info("✅ sentiment_score از sentiment_compound_mean استخراج شد")
             else:
-                # اگر sentiment_score وجود ندارد اما سایر ستون‌ها هستند
                 df_features['sentiment_score'] = 0
-                logging.warning("⚠️ sentiment_score یافت نشد، مقدار 0 تنظیم شد")
-                
-        elif broadcasting_sentiment_cols:
-            logging.info("✅ استفاده از ستون‌های Broadcasting احساسات و ایجاد نگاشت")
-            
-            # نگاشت ستون‌های Broadcasting
-            sentiment_mapping = {
-                'sentiment_compound_mean': 'sentiment_score',
-                'sentiment_positive_mean': 'sentiment_positive',
-                'sentiment_negative_mean': 'sentiment_negative',
-                'sentiment_neutral_mean': 'sentiment_neutral'
-            }
-            
-            for broadcast_col, target_col in sentiment_mapping.items():
-                if broadcast_col in df_features.columns:
-                    if target_col not in df_features.columns:
-                        df_features[target_col] = df_features[broadcast_col]
-                        logging.info(f"   ✅ نگاشت: {broadcast_col} -> {target_col}")
-                    else:
-                        logging.info(f"   ℹ️ {target_col} از قبل موجود است")
-                else:
-                    if target_col not in df_features.columns:
-                        df_features[target_col] = 0
-                        logging.warning(f"   ⚠️ {broadcast_col} یافت نشد، {target_col} = 0 تنظیم شد")
-            
-            # آمار sentiment_score بعد از نگاشت
-            if 'sentiment_score' in df_features.columns:
-                non_zero_sentiment = (df_features['sentiment_score'] != 0).sum()
-                total_records = len(df_features)
-                percentage = (non_zero_sentiment / total_records) * 100 if total_records > 0 else 0
-                logging.info(f"📊 آمار sentiment_score (بعد از نگاشت): {non_zero_sentiment:,} غیرصفر از {total_records:,} ({percentage:.1f}%)")
-                
+                logging.warning("⚠️ sentiment_compound_mean یافت نشد، sentiment_score = 0 تنظیم شد")
         else:
-            logging.warning("⚠️ هیچ ستون احساساتی یافت نشد. جستجو در فایل‌های خارجی...")
+            logging.warning("⚠️ هیچ ستون احساساتی یافت نشد. تلاش برای خواندن از فایل...")
             
-            # جستجو در فایل‌های پردازش شده
-            sentiment_files_patterns = [
-                'master_merged_data_*.parquet',  # فایل‌های ادغام شده جدید
-                'sentiment_scores_raw_*.parquet',
-                'sentiment_scores_daily_*.parquet', 
-                'sentiment_scores_hourly_*.parquet'
-            ]
+            # جستجو مستقیم در مسیر processed برای فایل‌های احساسات
+            sentiment_raw_files = glob.glob(os.path.join(PROCESSED_DATA_PATH, 'sentiment_scores_raw_*.parquet'))
+            sentiment_daily_files = glob.glob(os.path.join(PROCESSED_DATA_PATH, 'sentiment_scores_daily_*.parquet'))
+            sentiment_hourly_files = glob.glob(os.path.join(PROCESSED_DATA_PATH, 'sentiment_scores_hourly_*.parquet'))
             
-            found_sentiment_file = None
-            for pattern in sentiment_files_patterns:
-                files = glob.glob(os.path.join(processed_data_path, pattern))
-                if files:
-                    found_sentiment_file = max(files, key=os.path.getctime)  # آخرین فایل
-                    break
+            logging.info(f"📁 فایل‌های احساسات یافت شده: Raw={len(sentiment_raw_files)}, Daily={len(sentiment_daily_files)}, Hourly={len(sentiment_hourly_files)}")
             
-            if found_sentiment_file:
-                logging.info(f"📁 فایل احساسات خارجی یافت شده: {os.path.basename(found_sentiment_file)}")
-                try:
-                    sentiment_df = pd.read_parquet(found_sentiment_file)
-                    logging.info(f"📊 فایل احساسات خوانده شد: {sentiment_df.shape}")
-                    
-                    # بررسی ستون‌های موجود در فایل خارجی
-                    external_broadcast_cols = [col for col in sentiment_df.columns if 'sentiment' in col and 'mean' in col]
-                    external_direct_cols = [col for col in sentiment_df.columns if col in ['sentiment_score', 'sentiment_positive']]
-                    
-                    if external_broadcast_cols or external_direct_cols:
-                        logging.info(f"✅ ستون‌های احساسات در فایل خارجی: {external_broadcast_cols + external_direct_cols}")
-                        # می‌توان منطق ادغام اضافه کرد اگر نیاز باشد
-                    else:
-                        logging.warning("⚠️ فایل خارجی نیز فاقد ستون‌های احساسات است")
-                        
-                except Exception as e:
-                    logging.error(f"❌ خطا در خواندن فایل خارجی: {e}")
+            if not (sentiment_raw_files or sentiment_daily_files or sentiment_hourly_files):
+                logging.warning("⚠️ هیچ فایل احساساتی یافت نشد. اضافه کردن مقادیر پیش‌فرض.")
+                df_features['sentiment_score'] = 0
             else:
-                logging.warning("⚠️ هیچ فایل احساسات خارجی یافت نشد")
-            
-            # تنظیم مقادیر پیش‌فرض
-            for col in ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']:
-                if col not in df_features.columns:
-                    df_features[col] = 0
+                # تلاش برای خواندن و ادغام احساسات
+                logging.info("🔄 تلاش برای خواندن فایل‌های احساسات...")
+                df_features['sentiment_score'] = 0  # پیش‌فرض
+                
+                # اگر فایل hourly موجود است
+                if sentiment_hourly_files:
+                    try:
+                        latest_hourly_file = max(sentiment_hourly_files, key=os.path.getctime)
+                        logging.info(f"📊 خواندن فایل احساسات ساعتی: {os.path.basename(latest_hourly_file)}")
+                        sentiment_hourly_df = pd.read_parquet(latest_hourly_file)
+                        
+                        # محاولة ادغام ساده
+                        if 'symbol' in sentiment_hourly_df.columns and 'sentiment_compound_mean' in sentiment_hourly_df.columns:
+                            # گروه‌بندی بر اساس symbol و میانگین‌گیری
+                            symbol_sentiment = sentiment_hourly_df.groupby('symbol')['sentiment_compound_mean'].mean().to_dict()
+                            
+                            # اطمینان از وجود ستون symbol در df_features
+                            if df_features.index.names and 'symbol' in df_features.index.names:
+                                df_features = df_features.reset_index()
+                                df_features['sentiment_score'] = df_features['symbol'].map(symbol_sentiment).fillna(0)
+                                df_features.set_index(['symbol', 'timeframe', 'timestamp'], inplace=True)
+                                logging.info("✅ احساسات با موفقیت ادغام شد")
+                            else:
+                                logging.warning("⚠️ ساختار index مناسب نیست")
+                    except Exception as e:
+                        logging.error(f"❌ خطا در خواندن فایل hourly: {e}")
         
-        # محاسبه ویژگی‌های پیشرفته احساسات
+        # محاسبه ویژگی‌های پیشرفته احساسات بر اساس sentiment_score
         logging.info("🧮 محاسبه ویژگی‌های پیشرفته احساسات...")
         
         def calculate_advanced_sentiment_features(group):
             """محاسبه ویژگی‌های پیشرفته برای یک گروه"""
             # مرتب‌سازی بر اساس زمان
-            if hasattr(group.index, 'get_level_values') and 'timestamp' in group.index.names:
-                group = group.sort_index(level='timestamp')
-            elif 'timestamp' in group.columns:
-                group = group.sort_values('timestamp')
-            else:
-                group = group.sort_index()
+            group = group.sort_values('timestamp') if 'timestamp' in group.columns else group.sort_index()
             
             # محاسبه sentiment_momentum (تغییرات 24 ساعته)
-            momentum_period = min(INDICATOR_PARAMS['sentiment_momentum_period'], len(group))
-            if momentum_period > 0:
-                group['sentiment_momentum'] = group['sentiment_score'].diff(momentum_period).fillna(0)
+            if len(group) >= INDICATOR_PARAMS['sentiment_momentum_period']:
+                group['sentiment_momentum'] = group['sentiment_score'].diff(
+                    INDICATOR_PARAMS['sentiment_momentum_period']
+                )
             else:
                 group['sentiment_momentum'] = 0
             
@@ -645,7 +400,6 @@ def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: s
             window_short = min(INDICATOR_PARAMS['sentiment_ma_short'] * 24, len(group))  # 7 روز * 24 ساعت
             window_long = min(INDICATOR_PARAMS['sentiment_ma_long'] * 24, len(group))   # 14 روز * 24 ساعت
             
-            # میانگین متحرک کوتاه مدت
             if window_short > 0:
                 group['sentiment_ma_7'] = group['sentiment_score'].rolling(
                     window=window_short, min_periods=1
@@ -653,7 +407,6 @@ def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: s
             else:
                 group['sentiment_ma_7'] = group['sentiment_score']
             
-            # میانگین متحرک بلند مدت
             if window_long > 0:
                 group['sentiment_ma_14'] = group['sentiment_score'].rolling(
                     window=window_long, min_periods=1
@@ -661,100 +414,41 @@ def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: s
             else:
                 group['sentiment_ma_14'] = group['sentiment_score']
             
-            # محاسبه sentiment_volume (تعامل با حجم معاملات)
-            if 'volume' in group.columns:
-                # ترکیب sentiment با volume برای ایجاد sentiment_volume
-                sentiment_abs = abs(group['sentiment_score'])
-                volume_normalized = group['volume'] / group['volume'].max() if group['volume'].max() > 0 else 0
-                group['sentiment_volume'] = sentiment_abs * volume_normalized
-                group['sentiment_volume'] = group['sentiment_volume'].rolling(window=24, min_periods=1).sum()
-            else:
-                group['sentiment_volume'] = abs(group['sentiment_score']).rolling(window=24, min_periods=1).sum()
+            # محاسبه sentiment_volume (تعداد اخبار - شبیه‌سازی شده)
+            # از آنجایی که داده‌های خام اخبار در دسترس نیست، از یک metric تقریبی استفاده می‌کنیم
+            group['sentiment_volume'] = abs(group['sentiment_score']).rolling(window=24, min_periods=1).sum()
             
-            # محاسبه واگرایی احساسات از قیمت (بهبود یافته)
-            if 'close' in group.columns and len(group) > 20:
+            # محاسبه واگرایی احساسات از قیمت
+            if 'close' in group.columns and group['sentiment_score'].std() > 0:
                 try:
-                    # نرمال‌سازی قیمت و احساسات
-                    price_returns = group['close'].pct_change(20).fillna(0)  # 20-period price change
-                    sentiment_change = group['sentiment_score'].diff(20).fillna(0)  # 20-period sentiment change
-                    
-                    # محاسبه correlation rolling
-                    correlation_window = min(50, len(group))
-                    if correlation_window > 10:
-                        rolling_corr = price_returns.rolling(window=correlation_window, min_periods=10).corr(sentiment_change)
-                        group['sentiment_divergence'] = 1 - rolling_corr.fillna(0)  # واگرایی = 1 - همبستگی
-                    else:
-                        group['sentiment_divergence'] = 1
+                    price_normalized = (group['close'] - group['close'].mean()) / group['close'].std()
+                    sentiment_normalized = (group['sentiment_score'] - group['sentiment_score'].mean()) / group['sentiment_score'].std()
+                    group['sentiment_divergence'] = price_normalized - sentiment_normalized
                 except:
-                    group['sentiment_divergence'] = 1
+                    group['sentiment_divergence'] = 0
             else:
-                group['sentiment_divergence'] = 1
-            
-            # 🆕 === محاسبه ویژگی‌های Telegram پیشرفته (جایگزین Reddit) ===
-            # استفاده از sentiment_score به عنوان پایه برای Telegram features
-            if 'sentiment_score' in group.columns and group['sentiment_score'].sum() != 0:
-                # "reddit_score" در واقع از Telegram sentiment می‌آید
-                group['reddit_score'] = group['sentiment_score']
-                group['reddit_comments'] = group['sentiment_score'] * 10  # تخمین
-                
-                # محاسبه momentum برای Telegram-based "Reddit" features
-                group['reddit_score_momentum'] = group['reddit_score'].diff(12).fillna(0)
-                group['reddit_comments_momentum'] = group['reddit_comments'].diff(12).fillna(0)
-                
-                # محاسبه میانگین متحرک
-                group['reddit_score_ma'] = group['reddit_score'].rolling(window=12, min_periods=1).mean()
-                group['reddit_comments_ma'] = group['reddit_comments'].rolling(window=12, min_periods=1).mean()
-                
-                # محاسبه sentiment-reddit correlation (در واقع خودهمبستگی)
-                if len(group) > 20:
-                    corr_window = min(30, len(group))
-                    # correlation با خود sentiment (برای سازگاری)
-                    group['sentiment_reddit_score_corr'] = 1.0  # همبستگی کامل چون یکسان هستند
-                    group['sentiment_reddit_comments_corr'] = group['sentiment_score'].rolling(
-                        window=corr_window, min_periods=10
-                    ).corr(group['reddit_comments']).fillna(0.8)
-                else:
-                    group['sentiment_reddit_score_corr'] = 1.0
-                    group['sentiment_reddit_comments_corr'] = 0.8
-            else:
-                # اگر sentiment_score خالی است
-                reddit_features = ['reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma',
-                                 'reddit_score_momentum', 'reddit_comments_momentum',
-                                 'sentiment_reddit_score_corr', 'sentiment_reddit_comments_corr']
-                for feature in reddit_features:
-                    group[feature] = 0
-            
-            # === محاسبه diversity features ===
-            if 'source_diversity' in group.columns:
-                max_diversity = group['source_diversity'].max()
-                group['source_diversity_normalized'] = group['source_diversity'] / max_diversity if max_diversity > 0 else 0
-                
-                # تعامل diversity با sentiment
-                group['sentiment_diversity_interaction'] = group['sentiment_score'] * group['source_diversity_normalized']
-            else:
-                group['source_diversity_normalized'] = 0
-                group['sentiment_diversity_interaction'] = 0
+                group['sentiment_divergence'] = 0
             
             # پر کردن مقادیر NaN
-            sentiment_feature_columns = [col for col in group.columns if 'sentiment' in col or 'reddit' in col or 'source' in col]
-            for col in sentiment_feature_columns:
+            for col in ['sentiment_momentum', 'sentiment_ma_7', 'sentiment_ma_14', 'sentiment_volume', 'sentiment_divergence']:
                 if col in group.columns:
                     group[col] = group[col].fillna(0)
             
             return group
         
         # اعمال محاسبات به هر گروه
-        logging.info("🔄 اعمال محاسبات پیشرفته احساسات...")
-        
         if isinstance(df_features.index, pd.MultiIndex):
             if 'symbol' in df_features.index.names and 'timeframe' in df_features.index.names:
-                unique_groups = df_features.groupby(level=['symbol', 'timeframe']).ngroups
-                logging.info(f"🔄 پردازش {unique_groups} گروه برای محاسبه احساسات پیشرفته...")
+                df_features = df_features.reset_index()
+                unique_groups = df_features.groupby(['symbol', 'timeframe']).ngroups
+                logging.info(f"🔄 پردازش {unique_groups} گروه برای محاسبه احساسات...")
                 
-                # استفاده از group_keys=False برای حل pandas deprecation warning
-                df_features = df_features.groupby(level=['symbol', 'timeframe'], group_keys=False).apply(
+                df_features = df_features.groupby(['symbol', 'timeframe']).apply(
                     calculate_advanced_sentiment_features
-                )
+                ).reset_index(drop=True)
+                
+                # بازگرداندن index
+                df_features.set_index(['symbol', 'timeframe', 'timestamp'], inplace=True)
             else:
                 # اگر structure مناسب نیست، کل داده را پردازش کن
                 df_features = calculate_advanced_sentiment_features(df_features)
@@ -763,15 +457,7 @@ def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: s
             df_features = calculate_advanced_sentiment_features(df_features)
         
         # اطمینان از وجود همه ویژگی‌های احساسات
-        required_sentiment_features = [
-            'sentiment_score', 'sentiment_momentum', 'sentiment_ma_7', 'sentiment_ma_14', 
-            'sentiment_volume', 'sentiment_divergence',
-            'reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma',
-            'reddit_score_momentum', 'reddit_comments_momentum',
-            'sentiment_reddit_score_corr', 'sentiment_reddit_comments_corr',
-            'source_diversity_normalized', 'sentiment_diversity_interaction'
-        ]
-        
+        required_sentiment_features = ['sentiment_score', 'sentiment_momentum', 'sentiment_ma_7', 'sentiment_ma_14', 'sentiment_volume', 'sentiment_divergence']
         for feature in required_sentiment_features:
             if feature not in df_features.columns:
                 df_features[feature] = 0
@@ -779,26 +465,11 @@ def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: s
         
         # نمایش آمار ویژگی‌های احساسات
         logging.info("📈 آمار ویژگی‌های احساسات:")
-        for feature in required_sentiment_features[:6]:  # نمایش 6 ویژگی اصلی
+        for feature in required_sentiment_features:
             if feature in df_features.columns:
                 stats = df_features[feature].describe()
                 non_zero = (df_features[feature] != 0).sum()
                 logging.info(f"   {feature}: میانگین={stats['mean']:.4f}, انحراف معیار={stats['std']:.4f}, غیرصفر={non_zero}")
-        
-        # 🆕 نمایش آمار Telegram-based Reddit features
-        telegram_based_reddit_features = ['reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma']
-        reddit_stats = {}
-        for feature in telegram_based_reddit_features:
-            if feature in df_features.columns:
-                non_zero = (df_features[feature] != 0).sum()
-                reddit_stats[feature] = non_zero
-        
-        if any(reddit_stats.values()):
-            logging.info("📱 آمار Telegram-based Reddit features:")
-            for feature, count in reddit_stats.items():
-                logging.info(f"   {feature}: {count} رکورد غیرصفر")
-        else:
-            logging.info("📱 Telegram-based Reddit features: همه مقادیر صفر (احساسات پایه صفر است)")
         
         logging.info("✅ بهبود ویژگی‌های احساسات با موفقیت انجام شد.")
         
@@ -809,73 +480,44 @@ def enhance_sentiment_features(df_features: pd.DataFrame, processed_data_path: s
         
         # اضافه کردن ویژگی‌های پیش‌فرض در صورت خطا
         logging.info("🔄 اضافه کردن ویژگی‌های پیش‌فرض احساسات...")
-        required_features = [
-            'sentiment_score', 'sentiment_momentum', 'sentiment_ma_7', 'sentiment_ma_14', 
-            'sentiment_volume', 'sentiment_divergence',
-            'reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma',
-            'reddit_score_momentum', 'reddit_comments_momentum',
-            'sentiment_reddit_score_corr', 'sentiment_reddit_comments_corr',
-            'source_diversity_normalized', 'sentiment_diversity_interaction'
-        ]
+        required_features = ['sentiment_score', 'sentiment_momentum', 'sentiment_ma_7', 'sentiment_ma_14', 'sentiment_volume', 'sentiment_divergence']
         for feature in required_features:
             if feature not in df_features.columns:
                 df_features[feature] = 0
     
     return df_features
 
-def validate_feature_count(df_features: pd.DataFrame) -> Tuple[int, List[str]]:
-    """بررسی تعداد ویژگی‌ها و شناسایی ویژگی‌های از دست رفته"""
-    exclude_cols = ['timestamp', 'symbol', 'timeframe', 'open', 'high', 'low', 'close', 'volume', 'target']
-    
-    if isinstance(df_features.index, pd.MultiIndex):
-        # از index names حذف کن
-        index_cols = list(df_features.index.names) if df_features.index.names else []
-        exclude_cols.extend(index_cols)
-    
-    feature_columns = [col for col in df_features.columns if col not in exclude_cols]
-    
-    # لیست ویژگی‌های مورد انتظار (67 ویژگی - بدون تغییر در تعداد)
-    expected_features = [
-        # Technical indicators (43 features)
-        'rsi', 'macd', 'macd_hist', 'macd_signal',
-        'bb_upper', 'bb_middle', 'bb_lower', 'bb_position',
-        'atr', 'atr_percent', 'volatility', 'price_change',
-        'vwap', 'vwap_deviation', 'obv', 'obv_change', 'mfi', 'ad',
-        'stoch_k', 'stoch_d', 'williams_r', 'cci',
-        'ema_short', 'ema_medium', 'ema_long', 'ema_short_above_medium', 'ema_medium_above_long',
-        'ema_short_slope', 'ema_medium_slope',
-        'sma_short', 'sma_medium', 'sma_long', 'price_above_sma_short', 'price_above_sma_medium', 'price_above_sma_long',
-        'return_1', 'return_5', 'return_10', 'avg_return_5', 'avg_return_10',
-        'hl_ratio', 'close_position', 'volume_ma', 'volume_ratio',
-        'psar', 'price_above_psar', 'adx',
-        
-        # Sentiment features (16 features) - 🆕 اضافه شده: sentiment_diversity_interaction
-        'sentiment_score', 'sentiment_momentum', 'sentiment_ma_7', 'sentiment_ma_14', 'sentiment_volume', 'sentiment_divergence',
-        'reddit_score', 'reddit_comments', 'reddit_score_ma', 'reddit_comments_ma',
-        'reddit_score_momentum', 'reddit_comments_momentum',
-        'sentiment_reddit_score_corr', 'sentiment_reddit_comments_corr',
-        'source_diversity_normalized', 'sentiment_diversity_interaction'
-    ]
-    
-    missing_features = [f for f in expected_features if f not in feature_columns]
-    
-    return len(feature_columns), missing_features
-
 def run_feature_engineering(input_path: str, output_path: str):
-    """تابع اصلی اجرای مهندسی ویژگی - نسخه کاملاً اصلاح شده"""
+    """تابع اصلی اجرای مهندسی ویژگی"""
     global GLOBAL_COUNTER, TOTAL_GROUPS
     
     start_time = datetime.now()
-    logging.info("🚀 شروع مهندسی ویژگی (نسخه کاملاً اصلاح شده برای سازگاری با فایل‌های 01 و 02 بهبود یافته)...")
+    logging.info("🚀 شروع مهندسی ویژگی (نسخه اصلاح شده با احساسات Broadcasting)...")
     logging.info(f"📋 پارامترهای اندیکاتور: {INDICATOR_PARAMS}")
     
-    # یافتن آخرین فایل داده
-    list_of_files = glob.glob(os.path.join(input_path, 'master_*_data_*.parquet'))
+    # # یافتن آخرین فایل داده
+    # list_of_files = glob.glob(os.path.join(input_path, 'master_*_data_*.parquet'))
+    # if not list_of_files:
+    #     logging.error(f"❌ هیچ فایل داده اصلی در مسیر '{input_path}' یافت نشد.")
+    #     return
+    # latest_file = max(list_of_files, key=os.path.getctime)
+    # logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
+
+    # یافتن تمام فایل‌های master
+    list_of_files = sorted(glob.glob(os.path.join(input_path, 'master_*_data_*.parquet')))
     if not list_of_files:
         logging.error(f"❌ هیچ فایل داده اصلی در مسیر '{input_path}' یافت نشد.")
         return
-    latest_file = max(list_of_files, key=os.path.getctime)
-    logging.info(f"📂 در حال خواندن فایل داده اصلی: {os.path.basename(latest_file)}")
+
+    for latest_file in list_of_files:
+        logging.info(f"📂 در حال خواندن و پردازش فایل: {os.path.basename(latest_file)}")
+        try:
+            df = pd.read_parquet(latest_file)
+            # اجرای کل فرآیند مهندسی ویژگی برای df
+            # پیشنهاد می‌کنم تابعی مثل process_dataframe(df) بسازی که کد قبلی رو روش اجرا کنه
+        except Exception as e:
+            logging.error(f"❌ خطا در خواندن یا پردازش فایل '{latest_file}': {e}")
+
     
     # خواندن داده
     df = pd.read_parquet(latest_file)
@@ -883,19 +525,6 @@ def run_feature_engineering(input_path: str, output_path: str):
     
     # بررسی ساختار فایل
     logging.info(f"🔍 ساختار فایل: Index={df.index.names}, Columns={list(df.columns)}")
-    
-    # 🆕 بررسی وجود ستون‌های مختلف احساسات
-    broadcasting_sentiment_cols = [col for col in df.columns if 'sentiment' in col and 'mean' in col]
-    direct_sentiment_cols = [col for col in df.columns if col in ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']]
-    telegram_cols = [col for col in df.columns if 'telegram' in col]
-    reddit_cols = [col for col in df.columns if 'reddit' in col]
-    source_cols = [col for col in df.columns if 'source' in col]
-    
-    logging.info(f"🎭 ستون‌های Broadcasting sentiment موجود: {broadcasting_sentiment_cols}")
-    logging.info(f"🎯 ستون‌های مستقیم sentiment موجود: {direct_sentiment_cols}")
-    logging.info(f"📱 ستون‌های Telegram موجود: {telegram_cols}")
-    logging.info(f"🔴 ستون‌های Reddit موجود: {reddit_cols}")
-    logging.info(f"📡 ستون‌های Source موجود: {source_cols}")
     
     # محاسبه تعداد کل گروه‌ها
     if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names and 'timeframe' in df.index.names:
@@ -909,7 +538,6 @@ def run_feature_engineering(input_path: str, output_path: str):
     logging.info(f"💡 حداقل داده مورد نیاز برای هر گروه: {INDICATOR_PARAMS['min_data_points']}")
     
     if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names and 'timeframe' in df.index.names:
-        # استفاده از group_keys=False برای حل pandas deprecation warning
         df_features = df.groupby(level=['symbol', 'timeframe'], group_keys=False).apply(apply_features)
     else:
         # اگر ساختار MultiIndex درست نیست، کل داده را پردازش کن
@@ -918,6 +546,7 @@ def run_feature_engineering(input_path: str, output_path: str):
         if df_features is None:
             logging.error("❌ خطا در محاسبه ویژگی‌ها")
             return
+        df_features = pd.DataFrame([df_features])  # تبدیل به DataFrame
     
     # پاکسازی حافظه
     del df
@@ -960,14 +589,14 @@ def run_feature_engineering(input_path: str, output_path: str):
     # حذف ستون کمکی و ردیف‌های ناقص
     df_features.drop(columns=['future_close'], inplace=True)
     
-    # === بررسی تعداد ویژگی‌ها ===
-    feature_count, missing_features = validate_feature_count(df_features)
-    logging.info(f"🔢 تعداد ویژگی‌های محاسبه شده: {feature_count}")
-    
-    if missing_features:
-        logging.warning(f"⚠️ ویژگی‌های از دست رفته ({len(missing_features)}): {missing_features}")
+    # شمارش کل ویژگی‌ها
+    exclude_cols = ['timestamp', 'symbol', 'timeframe', 'open', 'high', 'low', 'close', 'volume', 'target']
+    if isinstance(df_features.index, pd.MultiIndex):
+        feature_columns = [col for col in df_features.columns if col not in exclude_cols]
     else:
-        logging.info("✅ همه ویژگی‌های مورد انتظار محاسبه شده‌اند")
+        feature_columns = [col for col in df_features.columns if col not in exclude_cols]
+    
+    logging.info(f"🔢 تعداد ویژگی‌های محاسبه شده: {len(feature_columns)}")
     
     # حذف ردیف‌های دارای مقدار NaN
     initial_rows = len(df_features)
@@ -975,21 +604,19 @@ def run_feature_engineering(input_path: str, output_path: str):
     final_rows = len(df_features)
     logging.info(f"🧹 تعداد ردیف‌های حذف شده به دلیل NaN: {initial_rows - final_rows:,}")
     
-    logging.info(f"✅ دیتاست نهایی با {final_rows:,} ردیف و {feature_count} ویژگی آماده شد.")
+    logging.info(f"✅ دیتاست نهایی با {final_rows:,} ردیف و {len(feature_columns)} ویژگی آماده شد.")
     
     # نمایش آمار کلی ویژگی‌ها (با تاکید بر ویژگی‌های احساسات)
     logging.info("📈 === آمار کلی ویژگی‌ها ===")
     important_features = ['sentiment_score', 'sentiment_momentum', 'sentiment_ma_7', 
                          'sentiment_ma_14', 'sentiment_volume', 'sentiment_divergence',
-                         'reddit_score', 'reddit_comments',
                          'rsi', 'macd', 'bb_position', 'atr_percent', 'volume_ratio']
     
     for col in important_features:
         if col in df_features.columns:
             mean_val = df_features[col].mean()
             std_val = df_features[col].std()
-            non_zero = (df_features[col] != 0).sum()
-            logging.info(f"   {col}: میانگین={mean_val:.4f}, انحراف معیار={std_val:.4f}, غیرصفر={non_zero}")
+            logging.info(f"   {col}: میانگین={mean_val:.4f}, انحراف معیار={std_val:.4f}")
     
     # بررسی توزیع target
     target_distribution = df_features['target'].value_counts()
@@ -1022,69 +649,31 @@ def run_feature_engineering(input_path: str, output_path: str):
     
     # گزارش نهایی
     print("\n" + "="*80)
-    print("🎉 === گزارش نهایی مهندسی ویژگی (نسخه کاملاً اصلاح شده + فایل 02 Compatible) ===")
+    print("🎉 === گزارش نهایی مهندسی ویژگی (نسخه اصلاح شده) ===")
     print(f"📊 تعداد کل ردیف‌ها: {final_rows:,}")
-    print(f"🔢 تعداد ویژگی‌ها: {feature_count}")
+    print(f"🔢 تعداد ویژگی‌ها: {len(feature_columns)}")
     print(f"🎯 درصد نمونه‌های مثبت: {target_percentage:.2f}%")
     print(f"⏱️ زمان اجرا: {execution_time}")
     print(f"📁 فایل خروجی: {output_filename}")
-    print("\n🆕 ویژگی‌های احساسات (Broadcasting + Multi-source + Telegram Compatible):")
-    print("  ✅ sentiment_score (از فایل 02: sentiment_compound_mean یا مستقیم)")
+    print("\n🆕 ویژگی‌های احساسات (Broadcasting):")
+    print("  ✅ sentiment_score (امتیاز پایه از Broadcasting)")
     print("  ✅ sentiment_momentum (تغییرات محاسبه شده)")
-    print("  ✅ sentiment_ma_7, sentiment_ma_14 (میانگین متحرک)")
-    print("  ✅ sentiment_volume (حجم تعامل)")
+    print("  ✅ sentiment_ma_7 (میانگین متحرک 7 واحد)")
+    print("  ✅ sentiment_ma_14 (میانگین متحرک 14 واحد)")
+    print("  ✅ sentiment_volume (حجم تقریبی)")
     print("  ✅ sentiment_divergence (واگرایی از قیمت)")
-    print("\n📱 ویژگی‌های Telegram-based (جایگزین Reddit):")
-    print("  ✅ reddit_score = sentiment_score (از Telegram)")
-    print("  ✅ reddit_comments = sentiment_score * 10 (تخمین)")
-    print("  ✅ reddit_score_ma, reddit_comments_ma (میانگین متحرک)")
-    print("  ✅ reddit_score_momentum, reddit_comments_momentum (تحرک)")
-    print("  ✅ sentiment_reddit_*_corr (همبستگی)")
-    print("\n📡 ویژگی‌های Source Diversity:")
-    print("  ✅ source_diversity_normalized (تنوع منابع نرمال شده)")
-    print("  ✅ sentiment_diversity_interaction (تعامل احساسات و تنوع)")
-    print("\n🔧 اصلاحات فنی:")
-    print("  ✅ تشخیص صحیح ستون‌های فایل 02")
-    print("  ✅ نگاشت sentiment_compound_mean -> sentiment_score")
-    print("  ✅ جایگزینی Reddit با Telegram-based features")
-    print("  ✅ رفع مشکل PSAR missing")
-    print("  ✅ حل pandas deprecation warnings")
-    print("  ✅ بهبود MFI calculation")
-    print("  ✅ بهینه‌سازی memory management")
     print("="*80)
     
     # نمایش نمونه داده نهایی
     if final_rows > 0:
         print("\n--- نمونه ۵ ردیف آخر از دیتاست نهایی ---")
         display_cols = ['open', 'high', 'low', 'close', 'volume', 'target'] + \
-                      [col for col in ['sentiment_score', 'reddit_score', 'rsi', 'macd', 'bb_position'] if col in df_features.columns][:5]
+                      [col for col in ['sentiment_score', 'rsi', 'macd', 'bb_position'] if col in df_features.columns][:4]
         print(df_features[display_cols].tail())
         
         print(f"\n--- اطلاعات کلی دیتاست نهایی ---")
         print(f"Shape: {df_features.shape}")
         print(f"Memory usage: {df_features.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
-        
-        # 🆕 نمایش آمار sentiment features با تاکید بر نگاشت
-        sentiment_stats = {}
-        key_features = ['sentiment_score', 'reddit_score', 'reddit_comments']
-        for col in key_features:
-            if col in df_features.columns:
-                non_zero = (df_features[col] != 0).sum()
-                sentiment_stats[col] = non_zero
-        
-        if sentiment_stats:
-            print(f"\n--- آمار ویژگی‌های احساسات (Telegram-based) ---")
-            for col, count in sentiment_stats.items():
-                percentage = (count / len(df_features)) * 100
-                print(f"{col}: {count:,} غیرصفر ({percentage:.1f}%)")
-                
-            # نمایش موفقیت نگاشت
-            if sentiment_stats.get('sentiment_score', 0) > 0:
-                print("✅ نگاشت احساسات از فایل 02 موفق بود")
-                if sentiment_stats.get('reddit_score', 0) > 0:
-                    print("✅ جایگزینی Reddit با Telegram-based features موفق بود")
-            else:
-                print("⚠️ احساسات همچنان صفر - نیاز به بررسی بیشتر")
 
 if __name__ == '__main__':
     run_feature_engineering(PROCESSED_DATA_PATH, FEATURES_PATH)

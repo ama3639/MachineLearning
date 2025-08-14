@@ -2,28 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-اسکریپت یکپارچه ETL و پردازش احساسات (نسخه اصلاح شده نهایی)
-
-🔧 تغییرات مهم این نسخه:
-- ✅ سازگاری کامل با فایل‌های جدید fetch_historical_data_01.py
-- ✅ پشتیبانی از منابع خبری جدید (Reddit, NewsAPI, RSS, CoinGecko)
-- ✅ تشخیص نام‌گذاری جدید فایل‌ها
-- ✅ پردازش API sources مختلف
-- ✅ حل مشکل عدم تطبیق زمانی بین اخبار و قیمت‌ها
-- ✅ استفاده از Broadcasting احساسات برای کل دوره
-- ✅ اصلاح منطق ادغام برای حفظ احساسات
-- ✅ افزودن fallback برای داده‌های بدون احساسات
-- 🆕 اضافه کردن ستون‌های سازگار با فایل 03 (sentiment_score, etc.)
-- 🆕 پشتیبانی از Telegram features به جای Reddit
-- 🆕 بهبود خروجی برای سازگاری با prepare_features_03.py
+اسکریپت یکپارچه ETL و پردازش احساسات (نسخه اصلاح شده - حل مشکل احساسات صفر)
 
 تغییرات اصلی:
 - حل مشکل عدم تطبیق زمانی بین اخبار و قیمت‌ها
 - استفاده از Broadcasting احساسات برای کل دوره
 - اصلاح منطق ادغام برای حفظ احساسات
 - افزودن fallback برای داده‌های بدون احساسات
-- پشتیبانی کامل از منابع خبری جدید
-- 🆕 اضافه کردن mapping ستون‌ها برای سازگاری با فایل 03
 """
 
 import os
@@ -69,27 +54,15 @@ news_raw_path = RAW_DATA_PATH
 processed_price_path = PROCESSED_DATA_PATH
 processed_sentiment_path = PROCESSED_DATA_PATH
 
-# --- کلاس پردازش یکپارچه داده (بهبود یافته) ---
+# --- کلاس پردازش یکپارچه داده ---
 class UnifiedDataProcessor:
-    """کلاس یکپارچه برای پردازش داده‌های قیمت و احساسات - نسخه بهبود یافته"""
+    """کلاس یکپارچه برای پردازش داده‌های قیمت و احساسات"""
     
     def __init__(self):
         self.sentiment_analyzer = SentimentIntensityAnalyzer()
         self.price_data = None
         self.sentiment_data = None
-        
-        # === منابع خبری شناسایی شده ===
-        self.known_news_sources = {
-            'GNews': 'gnews',
-            'NewsAPI': 'newsapi', 
-            'CoinGecko': 'coingecko',
-            'RSS': 'rss',
-            'Reddit': 'reddit',
-            'Telegram': 'telegram'  # 🆕 اضافه شده
-        }
-        
-        logging.info("🚀 Enhanced Unified Data Processor اولیه‌سازی شد")
-        logging.info(f"🔗 پشتیبانی از منابع خبری: {list(self.known_news_sources.keys())}")
+        logging.info("🚀 Unified Data Processor اولیه‌سازی شد")
     
     def debug_timestamp_column(self, df: pd.DataFrame, context: str = ""):
         """تابع کمکی برای debug کردن مشکلات timestamp"""
@@ -107,7 +80,7 @@ class UnifiedDataProcessor:
         logging.info(f"   انواع داده: {unique_types.to_dict()}")
     
     def extract_metadata_from_filename(self, filename: str) -> Tuple[str, str]:
-        """استخراج نماد و تایم‌فریم از نام فایل - نسخه بهبود یافته"""
+        """استخراج نماد و تایم‌فریم از نام فایل"""
         basename = os.path.basename(filename).upper()
         symbol, timeframe = "UNKNOWN", "UNKNOWN"
         
@@ -127,50 +100,6 @@ class UnifiedDataProcessor:
             timeframe = tf_match.group(0).replace("HISTOMINUTE", "1m").replace("HISTOHOUR", "1h").replace("HISTODAY", "1d")
         
         return symbol, timeframe
-    
-    def is_price_file(self, filename: str) -> bool:
-        """تشخیص فایل‌های قیمت - نسخه بهبود یافته"""
-        basename = os.path.basename(filename).lower()
-        
-        # فایل‌هایی که قطعاً قیمت نیستند
-        if basename.startswith('news_') or basename.startswith('sentiment_') or \
-           basename.startswith('unified_extraction_state') or \
-           'sentiment' in basename or 'news' in basename:
-            return False
-        
-        # فایل‌هایی که احتمالاً قیمت هستند
-        price_indicators = [
-            # الگوهای صرافی
-            'binance_', 'cryptocompare_', 'kraken_',
-            # الگوهای تایم‌فریم
-            '_1m_', '_5m_', '_15m_', '_1h_', '_4h_', '_1d_',
-            # الگوهای کلی
-            'ohlc', 'candle', 'kline', 'price'
-        ]
-        
-        return any(indicator in basename for indicator in price_indicators)
-    
-    def is_news_file(self, filename: str) -> bool:
-        """تشخیص فایل‌های خبری - نسخه بهبود یافته"""
-        basename = os.path.basename(filename).lower()
-        
-        # الگوهای فایل‌های خبری
-        news_patterns = [
-            'news_',           # فرمت جدید: news_BTC-USDT_en_20241127_143022.csv
-            'raw_news_',       # فرمت قدیمی
-            'sentiment_',      # فایل‌های احساسات
-        ]
-        
-        # بررسی الگوهای اصلی
-        if any(basename.startswith(pattern) for pattern in news_patterns):
-            return True
-        
-        # بررسی وجود منابع خبری در نام فایل
-        news_source_indicators = [source.lower() for source in self.known_news_sources.values()]
-        if any(source in basename for source in news_source_indicators):
-            return True
-        
-        return False
     
     def standardize_price_data(self, df: pd.DataFrame, filename: str) -> Optional[pd.DataFrame]:
         """استانداردسازی و اعتبارسنجی داده‌های قیمت"""
@@ -232,26 +161,14 @@ class UnifiedDataProcessor:
         return df_copy[['symbol', 'timeframe', 'open', 'high', 'low', 'close', 'volume']]
     
     def process_price_data(self) -> pd.DataFrame:
-        """پردازش همه فایل‌های قیمت - نسخه بهبود یافته"""
+        """پردازش همه فایل‌های قیمت"""
         logging.info("شروع پردازش داده‌های قیمت...")
         
-        # یافتن فایل‌های قیمت با فیلتر بهبود یافته
-        all_files = glob.glob(os.path.join(RAW_DATA_PATH, '*.*'))        
-        price_files = []
-        
-        for f_path in all_files:
-            if f_path.endswith(('.csv', '.json', '.parquet')) and self.is_price_file(f_path):
-                price_files.append(f_path)
+        # یافتن فایل‌های قیمت
+        price_files = glob.glob(os.path.join(RAW_DATA_PATH, '*.*'))        
+        price_files = [f for f in price_files if f.endswith(('.csv', '.json', '.parquet'))]
         
         logging.info(f"تعداد {len(price_files)} فایل قیمت یافت شد")
-        
-        # نمایش نمونه فایل‌های یافت شده
-        if price_files:
-            logging.info("نمونه فایل‌های قیمت یافت شده:")
-            for f_path in price_files[:5]:  # نمایش 5 فایل اول
-                logging.info(f"   - {os.path.basename(f_path)}")
-            if len(price_files) > 5:
-                logging.info(f"   ... و {len(price_files) - 5} فایل دیگر")
         
         all_dataframes = []
         
@@ -315,42 +232,8 @@ class UnifiedDataProcessor:
             logging.warning(f"خطا در تحلیل احساسات: {e}")
             return {'compound': 0, 'neg': 0, 'neu': 0, 'pos': 0}
     
-    def detect_news_source(self, file_path: str, df: pd.DataFrame) -> str:
-        """تشخیص منبع خبری از نام فایل یا محتوای فایل"""
-        basename = os.path.basename(file_path).lower()
-        
-        # بررسی نام فایل
-        for source_name, source_key in self.known_news_sources.items():
-            if source_key in basename:
-                return source_name
-        
-        # بررسی ستون api_source در داده‌ها
-        if 'api_source' in df.columns:
-            sources = df['api_source'].value_counts()
-            if not sources.empty:
-                return sources.index[0]  # بازگرداندن پرتکرارترین منبع
-        
-        # بررسی ستون source
-        if 'source' in df.columns:
-            sources = df['source'].value_counts()
-            if not sources.empty:
-                # تشخیص بر اساس الگوهای شناخته شده
-                top_source = sources.index[0].lower()
-                if 'reddit' in top_source or 'r/' in top_source:
-                    return 'Reddit'
-                elif 'newsapi' in top_source:
-                    return 'NewsAPI'
-                elif 'coingecko' in top_source:
-                    return 'CoinGecko'
-                elif 'telegram' in top_source:  # 🆕 اضافه شده
-                    return 'Telegram'
-                elif any(rss_name in top_source for rss_name in ['coindesk', 'cointelegraph', 'decrypt', 'cryptonews']):
-                    return 'RSS'
-        
-        return 'Unknown'
-    
     def process_news_file(self, file_path: str) -> Optional[pd.DataFrame]:
-        """پردازش یک فایل خبری و تحلیل احساسات آن - نسخه بهبود یافته"""
+        """پردازش یک فایل خبری و تحلیل احساسات آن"""
         try:
             # خواندن فایل
             if file_path.endswith('.csv'):
@@ -360,16 +243,12 @@ class UnifiedDataProcessor:
             else:
                 return None
             
-            # تشخیص منبع خبری
-            news_source = self.detect_news_source(file_path, df)
-            
-            logging.info(f"پردازش فایل خبری: {os.path.basename(file_path)} با {len(df)} خبر (منبع: {news_source})")
+            logging.info(f"پردازش فایل خبری: {os.path.basename(file_path)} با {len(df)} خبر")
             
             # بررسی ستون‌های مورد نیاز
             required_cols = ['timestamp', 'symbol', 'title']
             if not all(col in df.columns for col in required_cols):
                 logging.error(f"ستون‌های مورد نیاز در فایل یافت نشد: {required_cols}")
-                logging.error(f"ستون‌های موجود: {list(df.columns)}")
                 return None
             
             # ترکیب متن‌ها برای تحلیل جامع‌تر
@@ -384,9 +263,6 @@ class UnifiedDataProcessor:
             
             if df.empty:
                 return None
-            
-            # اضافه کردن اطلاعات منبع
-            df['detected_source'] = news_source
             
             # تحلیل احساسات
             sentiment_scores = df['full_text'].apply(lambda x: self.analyze_sentiment_with_vader(x))
@@ -426,28 +302,6 @@ class UnifiedDataProcessor:
                 # میانگین‌گیری از دو روش
                 df['sentiment_compound'] = (df['sentiment_compound'] + df['sentiment_score']) / 2
             
-            # === ویژگی‌های مخصوص Reddit ===
-            if news_source == 'Reddit':
-                # Reddit دارای ویژگی‌های خاص است
-                if 'score' in df.columns:
-                    df['reddit_score'] = pd.to_numeric(df['score'], errors='coerce').fillna(0)
-                if 'comments' in df.columns:
-                    df['reddit_comments'] = pd.to_numeric(df['comments'], errors='coerce').fillna(0)
-                
-                logging.info(f"✅ Reddit features اضافه شد")
-            
-            # 🆕 === ویژگی‌های مخصوص Telegram ===
-            if news_source == 'Telegram':
-                # Telegram features (برای سازگاری با فایل 03)
-                if 'extracted_prices' in df.columns:
-                    df['telegram_prices'] = df['extracted_prices']
-                if 'extracted_targets' in df.columns:
-                    df['telegram_targets'] = df['extracted_targets']
-                if 'channel_type' in df.columns:
-                    df['telegram_channel_type'] = df['channel_type']
-                
-                logging.info(f"✅ Telegram features اضافه شد")
-            
             return df
             
         except Exception as e:
@@ -455,16 +309,13 @@ class UnifiedDataProcessor:
             return None
     
     def process_sentiment_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """پردازش همه فایل‌های خبری و محاسبه آمار احساسات - نسخه بهبود یافته"""
+        """پردازش همه فایل‌های خبری و محاسبه آمار احساسات"""
         logging.info("شروع پردازش داده‌های احساسات...")
         
-        # یافتن فایل‌های خبری با فیلتر بهبود یافته
-        all_files = glob.glob(os.path.join(RAW_DATA_PATH, '*.*'))
+        # یافتن فایل‌های خبری
         news_files = []
-        
-        for f_path in all_files:
-            if f_path.endswith(('.csv', '.parquet')) and self.is_news_file(f_path):
-                news_files.append(f_path)
+        for pattern in ['raw_news_*.csv', 'raw_news_*.parquet', 'news_*.csv', 'news_*.parquet']:
+            news_files.extend(glob.glob(os.path.join(RAW_DATA_PATH, pattern)))        
         
         if not news_files:
             logging.warning("هیچ فایل خبری برای پردازش یافت نشد.")
@@ -472,35 +323,16 @@ class UnifiedDataProcessor:
         
         logging.info(f"تعداد {len(news_files)} فایل خبری یافت شد")
         
-        # نمایش نمونه فایل‌های یافت شده
-        if news_files:
-            logging.info("نمونه فایل‌های خبری یافت شده:")
-            for f_path in news_files[:5]:  # نمایش 5 فایل اول
-                logging.info(f"   - {os.path.basename(f_path)}")
-            if len(news_files) > 5:
-                logging.info(f"   ... و {len(news_files) - 5} فایل دیگر")
-        
         all_processed_dfs = []
-        source_stats = {}
         
         for file_path in news_files:
             processed_df = self.process_news_file(file_path)
             if processed_df is not None:
                 all_processed_dfs.append(processed_df)
-                
-                # آمار منابع
-                if 'detected_source' in processed_df.columns:
-                    source = processed_df['detected_source'].iloc[0]
-                    source_stats[source] = source_stats.get(source, 0) + len(processed_df)
         
         if not all_processed_dfs:
             logging.error("هیچ داده‌ای برای پردازش احساسات یافت نشد.")
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-        
-        # نمایش آمار منابع
-        logging.info("\n📊 آمار منابع خبری:")
-        for source, count in source_stats.items():
-            logging.info(f"   📡 {source}: {count:,} خبر")
         
         # ادغام تمام داده‌های پردازش شده
         logging.info("ادغام داده‌های احساسات...")
@@ -524,13 +356,7 @@ class UnifiedDataProcessor:
         
         # حذف تکراری‌ها
         before_dedup = len(combined_df)
-        dedup_cols = ['timestamp', 'symbol', 'title']
-        
-        # اگر ستون url موجود است، آن را هم به عنوان کلید یکتا اضافه کن
-        if 'url' in combined_df.columns:
-            dedup_cols.append('url')
-        
-        combined_df = combined_df.drop_duplicates(subset=dedup_cols)
+        combined_df = combined_df.drop_duplicates(subset=['timestamp', 'symbol', 'title'])
         after_dedup = len(combined_df)
         
         if before_dedup != after_dedup:
@@ -588,43 +414,22 @@ class UnifiedDataProcessor:
             logging.error(f"خطا در استخراج date از timestamp: {e}")
             logging.error(f"نوع timestamp: {df['timestamp'].dtype}")
             return pd.DataFrame(), pd.DataFrame()
-        
-        # آمار اولیه
-        agg_dict = {
+            
+        daily_stats = df.groupby(['symbol', 'date']).agg({
             'sentiment_compound': ['mean', 'std', 'min', 'max'],
             'sentiment_positive': 'mean',
             'sentiment_negative': 'mean',
             'sentiment_neutral': 'mean',
             'text_length': 'mean'
-        }
-        
-        # اگر ستون‌های مخصوص Reddit موجود است
-        if 'reddit_score' in df.columns:
-            agg_dict['reddit_score'] = 'mean'
-        if 'reddit_comments' in df.columns:
-            agg_dict['reddit_comments'] = 'mean'
-        
-        # 🆕 اگر ستون‌های مخصوص Telegram موجود است
-        if 'telegram_prices' in df.columns:
-            agg_dict['telegram_prices'] = 'count'  # تعداد پیام‌های دارای قیمت
-        if 'telegram_channel_type' in df.columns:
-            # می‌توانیم diversity type ها را حساب کنیم
-            pass
-        
-        daily_stats = df.groupby(['symbol', 'date']).agg(agg_dict).round(4)
+        }).round(4)
         
         # تغییر نام ستون‌ها
         daily_stats.columns = ['_'.join(col).strip() for col in daily_stats.columns.values]
         daily_stats = daily_stats.reset_index()
         
-        # افزودن تعداد اخبار و تنوع منابع
+        # افزودن تعداد اخبار
         news_count = df.groupby(['symbol', 'date']).size().reset_index(name='news_count')
         daily_stats = pd.merge(daily_stats, news_count, on=['symbol', 'date'], how='left')
-        
-        # تعداد منابع مختلف
-        if 'detected_source' in df.columns:
-            source_diversity = df.groupby(['symbol', 'date'])['detected_source'].nunique().reset_index(name='source_diversity')
-            daily_stats = pd.merge(daily_stats, source_diversity, on=['symbol', 'date'], how='left')
         
         # آمار ساعتی برای هر نماد
         try:
@@ -633,22 +438,12 @@ class UnifiedDataProcessor:
             logging.error(f"خطا در محاسبه hour: {e}")
             return daily_stats, pd.DataFrame()
         
-        hourly_agg = {
+        hourly_stats = df.groupby(['symbol', 'hour']).agg({
             'sentiment_compound': ['mean', 'count'],
             'sentiment_positive': 'mean',
             'sentiment_negative': 'mean',
             'sentiment_neutral': 'mean'
-        }
-        
-        # اگر ستون‌های مخصوص Reddit موجود است
-        if 'reddit_score' in df.columns:
-            hourly_agg['reddit_score'] = 'mean'
-        
-        # 🆕 اگر ستون‌های مخصوص Telegram موجود است
-        if 'telegram_prices' in df.columns:
-            hourly_agg['telegram_prices'] = 'count'
-        
-        hourly_stats = df.groupby(['symbol', 'hour']).agg(hourly_agg).round(4)
+        }).round(4)
         
         hourly_stats.columns = ['_'.join(col).strip() for col in hourly_stats.columns.values]
         hourly_stats = hourly_stats.reset_index()
@@ -656,9 +451,9 @@ class UnifiedDataProcessor:
         return daily_stats, hourly_stats
     
     def generate_sentiment_report(self, df: pd.DataFrame):
-        """تولید گزارش جامع احساسات - نسخه بهبود یافته"""
+        """تولید گزارش جامع احساسات"""
         logging.info("\n" + "="*60)
-        logging.info("📊 گزارش جامع تحلیل احساسات (Enhanced)")
+        logging.info("📊 گزارش جامع تحلیل احساسات")
         logging.info("="*60)
         
         # آمار کلی
@@ -668,15 +463,6 @@ class UnifiedDataProcessor:
         logging.info(f"📅 بازه زمانی: {date_range}")
         logging.info(f"📰 تعداد کل اخبار: {total_news:,}")
         logging.info(f"🪙 تعداد نمادها: {df['symbol'].nunique()}")
-        
-        # آمار منابع (اگر موجود باشد)
-        if 'detected_source' in df.columns:
-            source_dist = df['detected_source'].value_counts()
-            logging.info(f"\n📡 توزیع منابع خبری:")
-            for source, count in source_dist.items():
-                percentage = (count / total_news) * 100
-                emoji = {'GNews': '🌐', 'NewsAPI': '📰', 'CoinGecko': '🦎', 'RSS': '📡', 'Reddit': '🔴', 'Telegram': '📱'}.get(source, '📊')
-                logging.info(f"   {emoji} {source}: {count:,} ({percentage:.1f}%)")
         
         # توزیع احساسات کلی
         sentiment_dist = df['sentiment_label'].value_counts()
@@ -703,31 +489,6 @@ class UnifiedDataProcessor:
             logging.info(f"   {emoji} {symbol}: میانگین={mean_sentiment:.3f}, "
                         f"انحراف معیار={std_sentiment:.3f}, "
                         f"تعداد={count}, مثبت={positive_pct:.1f}%")
-        
-        # آمار ویژه Reddit (اگر موجود باشد)
-        if 'reddit_score' in df.columns:
-            reddit_df = df[df['detected_source'] == 'Reddit']
-            if not reddit_df.empty:
-                logging.info("\n🔴 آمار ویژه Reddit:")
-                avg_score = reddit_df['reddit_score'].mean()
-                avg_comments = reddit_df['reddit_comments'].mean()
-                logging.info(f"   میانگین امتیاز پست‌ها: {avg_score:.1f}")
-                logging.info(f"   میانگین تعداد کامنت‌ها: {avg_comments:.1f}")
-        
-        # 🆕 آمار ویژه Telegram (اگر موجود باشد)
-        if 'detected_source' in df.columns and 'Telegram' in df['detected_source'].values:
-            telegram_df = df[df['detected_source'] == 'Telegram']
-            if not telegram_df.empty:
-                logging.info("\n📱 آمار ویژه Telegram:")
-                logging.info(f"   تعداد کل پیام‌های Telegram: {len(telegram_df):,}")
-                
-                if 'telegram_channel_type' in telegram_df.columns:
-                    channel_types = telegram_df['telegram_channel_type'].value_counts()
-                    logging.info(f"   توزیع انواع کانال: {dict(channel_types)}")
-                
-                if 'telegram_prices' in telegram_df.columns:
-                    price_mentions = (telegram_df['telegram_prices'] != '[]').sum()
-                    logging.info(f"   پیام‌های دارای قیمت: {price_mentions}")
     
     def normalize_timezone(self, df: pd.DataFrame) -> pd.DataFrame:
         """نرمال‌سازی timezone برای جلوگیری از خطای merge"""
@@ -749,7 +510,6 @@ class UnifiedDataProcessor:
     def merge_price_and_sentiment(self) -> pd.DataFrame:
         """
         ادغام هوشمند داده‌های قیمت و احساسات با حل مشکل عدم تطبیق زمانی
-        🆕 بهبود شده برای سازگاری با فایل 03
         
         راه‌حل: استفاده از Broadcasting احساسات برای کل دوره
         """
@@ -763,19 +523,10 @@ class UnifiedDataProcessor:
             logging.warning("داده‌های احساسات موجود نیست. ادامه بدون احساسات...")
             # اضافه کردن ستون‌های احساسات با مقدار صفر
             price_data = self.price_data.reset_index()
-            # 🆕 اضافه کردن ستون‌های مورد انتظار فایل 03
             price_data['sentiment_compound_mean'] = 0
             price_data['sentiment_positive_mean'] = 0
             price_data['sentiment_negative_mean'] = 0
             price_data['sentiment_neutral_mean'] = 0
-            # اضافه کردن mapping برای سازگاری
-            price_data['sentiment_score'] = 0
-            price_data['sentiment_positive'] = 0
-            price_data['sentiment_negative'] = 0
-            price_data['sentiment_neutral'] = 0
-            # Reddit placeholder
-            price_data['reddit_score'] = 0
-            price_data['reddit_comments'] = 0
             price_data.set_index(['symbol', 'timeframe', 'timestamp'], inplace=True)
             return price_data
         
@@ -790,36 +541,16 @@ class UnifiedDataProcessor:
         # محاسبه آمار احساسات کلی برای هر نماد (بدون توجه به زمان)
         logging.info("محاسبه آمار احساسات کلی برای هر نماد...")
         
-        # آمار پایه
-        basic_agg = {
+        sentiment_symbol_stats = sentiment_data.groupby('symbol').agg({
             'sentiment_compound': ['mean', 'std', 'count'],
             'sentiment_positive': 'mean',
             'sentiment_negative': 'mean',
             'sentiment_neutral': 'mean'
-        }
-        
-        # اگر ستون‌های Reddit موجود است
-        if 'reddit_score' in sentiment_data.columns:
-            basic_agg['reddit_score'] = 'mean'
-        if 'reddit_comments' in sentiment_data.columns:
-            basic_agg['reddit_comments'] = 'mean'
-        
-        # 🆕 اگر ستون‌های Telegram موجود است
-        if 'telegram_prices' in sentiment_data.columns:
-            basic_agg['telegram_prices'] = 'count'
-        if 'telegram_channel_type' in sentiment_data.columns:
-            basic_agg['telegram_channel_type'] = lambda x: x.mode().iloc[0] if not x.mode().empty else 'unknown'
-        
-        sentiment_symbol_stats = sentiment_data.groupby('symbol').agg(basic_agg).round(4)
+        }).round(4)
         
         # تغییر نام ستون‌ها
         sentiment_symbol_stats.columns = ['_'.join(col).strip() for col in sentiment_symbol_stats.columns.values]
         sentiment_symbol_stats = sentiment_symbol_stats.reset_index()
-        
-        # اضافه کردن تنوع منابع
-        if 'detected_source' in sentiment_data.columns:
-            source_diversity = sentiment_data.groupby('symbol')['detected_source'].nunique().reset_index(name='source_diversity')
-            sentiment_symbol_stats = pd.merge(sentiment_symbol_stats, source_diversity, on='symbol', how='left')
         
         # ادغام کلی بر اساس نماد (Broadcast احساسات)
         logging.info(f"Broadcasting احساسات برای {len(price_data)} رکورد قیمت...")
@@ -831,45 +562,8 @@ class UnifiedDataProcessor:
             how='left'
         )
         
-        # 🆕 === اضافه کردن ستون‌های سازگار با فایل 03 ===
-        logging.info("🔧 اضافه کردن ستون‌های سازگار با prepare_features_03.py...")
-        
-        # نگاشت ستون‌های اصلی احساسات
-        sentiment_mapping = {
-            'sentiment_compound_mean': 'sentiment_score',
-            'sentiment_positive_mean': 'sentiment_positive', 
-            'sentiment_negative_mean': 'sentiment_negative',
-            'sentiment_neutral_mean': 'sentiment_neutral'
-        }
-        
-        for broadcast_col, target_col in sentiment_mapping.items():
-            if broadcast_col in merged_data.columns:
-                merged_data[target_col] = merged_data[broadcast_col].fillna(0)
-                logging.info(f"   ✅ {broadcast_col} -> {target_col}")
-            else:
-                merged_data[target_col] = 0
-                logging.warning(f"   ⚠️ {broadcast_col} not found, {target_col} set to 0")
-        
-        # Reddit features (placeholder اگر موجود نباشد)
-        reddit_features = ['reddit_score_mean', 'reddit_comments_mean']
-        for feature in reddit_features:
-            if feature in merged_data.columns:
-                clean_name = feature.replace('_mean', '')
-                merged_data[clean_name] = merged_data[feature].fillna(0)
-            else:
-                clean_name = feature.replace('_mean', '')
-                merged_data[clean_name] = 0
-        
-        # 🆕 Telegram features (اگر موجود باشد)
-        telegram_features = ['telegram_prices_count', 'telegram_channel_type_<lambda>']
-        for feature in telegram_features:
-            if feature in merged_data.columns:
-                clean_name = feature.replace('_count', '').replace('_<lambda>', '')
-                merged_data[clean_name] = merged_data[feature].fillna(0)
-                logging.info(f"   ✅ Telegram feature: {feature} -> {clean_name}")
-        
         # پر کردن مقادیر خالی احساسات با مقادیر پیش‌فرض
-        sentiment_columns = [col for col in merged_data.columns if 'sentiment' in col or 'reddit' in col or 'source_diversity' in col or 'telegram' in col]
+        sentiment_columns = [col for col in merged_data.columns if 'sentiment' in col]
         for col in sentiment_columns:
             merged_data[col] = merged_data[col].fillna(0)
         
@@ -879,31 +573,15 @@ class UnifiedDataProcessor:
         
         logging.info(f"✅ ادغام تکمیل شد. شکل نهایی داده: {merged_data.shape}")
         
-        # 🆕 نمایش آمار سازگاری با فایل 03
-        logging.info(f"\n📊 آمار ستون‌های سازگار با prepare_features_03.py:")
-        compatibility_cols = ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral', 
-                            'reddit_score', 'reddit_comments']
-        
-        for col in compatibility_cols:
-            if col in merged_data.columns:
+        # نمایش نمونه احساسات ادغام شده
+        sentiment_cols = [col for col in merged_data.columns if 'sentiment' in col]
+        if sentiment_cols:
+            sample_sentiment = merged_data[sentiment_cols].describe()
+            logging.info(f"\n📊 آمار احساسات ادغام شده:")
+            for col in sentiment_cols:
                 non_zero = (merged_data[col] != 0).sum()
                 mean_val = merged_data[col].mean()
                 logging.info(f"   {col}: تعداد غیر صفر = {non_zero} ({non_zero/len(merged_data)*100:.1f}%), میانگین = {mean_val:.4f}")
-            else:
-                logging.warning(f"   ⚠️ {col}: ستون یافت نشد")
-        
-        # نمایش آمار منابع
-        if 'source_diversity' in merged_data.columns:
-            avg_diversity = merged_data['source_diversity'].mean()
-            logging.info(f"   📡 میانگین تنوع منابع: {avg_diversity:.2f}")
-        
-        # 🆕 نمایش آمار Telegram
-        telegram_cols = [col for col in merged_data.columns if 'telegram' in col]
-        if telegram_cols:
-            logging.info(f"   📱 Telegram features: {len(telegram_cols)} ستون")
-            for col in telegram_cols:
-                non_zero = (merged_data[col] != 0).sum()
-                logging.info(f"     {col}: {non_zero} غیرصفر")
         
         return merged_data
     
@@ -971,9 +649,9 @@ class UnifiedDataProcessor:
 
 def run_unified_processing(process_price: bool = True, process_sentiment: bool = True,
                          merge_data: bool = True):
-    """تابع اصلی اجرای پردازش یکپارچه - نسخه بهبود یافته"""
+    """تابع اصلی اجرای پردازش یکپارچه"""
     logging.info("="*80)
-    logging.info("🚀 شروع پردازش یکپارچه داده‌ها (Enhanced Unified ETL)")
+    logging.info("🚀 شروع پردازش یکپارچه داده‌ها (Unified ETL) - نسخه اصلاح شده")
     logging.info("="*80)
     
     processor = UnifiedDataProcessor()
@@ -999,36 +677,27 @@ def run_unified_processing(process_price: bool = True, process_sentiment: bool =
     
     # پردازش داده‌های احساسات
     if process_sentiment:
-        logging.info("\n🎭 مرحله 2: پردازش داده‌های احساسات (Enhanced)")
+        logging.info("\n🎭 مرحله 2: پردازش داده‌های احساسات")
         sentiment_raw, sentiment_daily, sentiment_hourly = processor.process_sentiment_data()
         
         if not sentiment_raw.empty:
             logging.info(f"✅ تعداد {len(sentiment_raw)} خبر پردازش شد")
             logging.info(f"📰 تعداد نمادها: {sentiment_raw['symbol'].nunique()}")
-            
-            # آمار منابع
-            if 'detected_source' in sentiment_raw.columns:
-                source_counts = sentiment_raw['detected_source'].value_counts()
-                logging.info(f"📡 منابع شناسایی شده: {dict(source_counts)}")
         else:
             logging.warning("⚠️ هیچ داده احساساتی پردازش نشد")
     
     # ادغام داده‌ها
     if merge_data and not price_df.empty:
-        logging.info("\n🔗 مرحله 3: ادغام داده‌های قیمت و احساسات (Enhanced Broadcasting + فایل 03 Ready)")
+        logging.info("\n🔗 مرحله 3: ادغام داده‌های قیمت و احساسات (روش Broadcasting)")
         merged_df = processor.merge_price_and_sentiment()
         
         if not merged_df.empty:
             logging.info(f"✅ ادغام موفق: {merged_df.shape}")
             
             # نمایش نمونه ستون‌های احساسات
-            sentiment_cols = [col for col in merged_df.columns if 'sentiment' in col or 'reddit' in col]
+            sentiment_cols = [col for col in merged_df.columns if 'sentiment' in col]
             if sentiment_cols:
-                logging.info(f"🎭 ستون‌های احساسات اضافه شده: {len(sentiment_cols)} ستون")
-                for col in sentiment_cols[:5]:  # نمایش 5 ستون اول
-                    logging.info(f"     - {col}")
-                if len(sentiment_cols) > 5:
-                    logging.info(f"     ... و {len(sentiment_cols) - 5} ستون دیگر")
+                logging.info(f"🎭 ستون‌های احساسات اضافه شده: {sentiment_cols}")
     
     # ذخیره داده‌ها
     logging.info("\n💾 مرحله 4: ذخیره داده‌های پردازش شده")
@@ -1038,7 +707,7 @@ def run_unified_processing(process_price: bool = True, process_sentiment: bool =
     
     # گزارش نهایی
     print("\n" + "="*80)
-    print("📊 گزارش نهایی پردازش یکپارچه (Enhanced + 03 Compatible)")
+    print("📊 گزارش نهایی پردازش یکپارچه (نسخه اصلاح شده)")
     print("="*80)
     
     if process_price:
@@ -1051,52 +720,23 @@ def run_unified_processing(process_price: bool = True, process_sentiment: bool =
         print(f"\n🎭 داده‌های احساسات:")
         print(f"   - تعداد خبر: {len(sentiment_raw):,}")
         print(f"   - تعداد نماد: {sentiment_raw['symbol'].nunique() if not sentiment_raw.empty else 0}")
-        
-        # آمار منابع
-        if not sentiment_raw.empty and 'detected_source' in sentiment_raw.columns:
-            source_counts = sentiment_raw['detected_source'].value_counts()
-            print(f"   - منابع خبری:")
-            for source, count in source_counts.items():
-                emoji = {'GNews': '🌐', 'NewsAPI': '📰', 'CoinGecko': '🦎', 'RSS': '📡', 'Reddit': '🔴', 'Telegram': '📱'}.get(source, '📊')
-                print(f"     {emoji} {source}: {count:,} خبر")
     
     if merge_data and not merged_df.empty:
         print(f"\n🔗 داده‌های ادغام شده:")
         print(f"   - شکل نهایی: {merged_df.shape}")
-        sentiment_features = [col for col in merged_df.columns if 'sentiment' in col or 'reddit' in col]
+        sentiment_features = [col for col in merged_df.columns if 'sentiment' in col]
         print(f"   - ویژگی‌های احساسات: {len(sentiment_features)}")
         
         # نمایش درصد رکوردهایی که احساسات دارند
         non_zero_sentiment = 0
         if sentiment_features:
-            # جستجو برای sentiment_score که فایل 03 انتظار دارد
-            if 'sentiment_score' in merged_df.columns:
-                non_zero_sentiment = (merged_df['sentiment_score'] != 0).sum()
-                mean_val = merged_df['sentiment_score'].mean()
-                print(f"   - رکوردهای دارای sentiment_score: {non_zero_sentiment:,} ({non_zero_sentiment/len(merged_df)*100:.1f}%)")
-                print(f"   - میانگین sentiment_score: {mean_val:.4f}")
-            elif 'sentiment_compound_mean' in merged_df.columns:
-                non_zero_sentiment = (merged_df['sentiment_compound_mean'] != 0).sum()
-                mean_val = merged_df['sentiment_compound_mean'].mean()
-                print(f"   - رکوردهای دارای احساسات: {non_zero_sentiment:,} ({non_zero_sentiment/len(merged_df)*100:.1f}%)")
-                print(f"   - میانگین احساسات: {mean_val:.4f}")
-        
-        # آمار منابع در داده‌های ادغام شده
-        if 'source_diversity' in merged_df.columns:
-            avg_diversity = merged_df['source_diversity'].mean()
-            max_diversity = merged_df['source_diversity'].max()
-            print(f"   - میانگین تنوع منابع: {avg_diversity:.2f}")
-            print(f"   - حداکثر تنوع منابع: {max_diversity:.0f}")
-        
-        # 🆕 آمار ویژگی‌های سازگار با فایل 03
-        print(f"\n🔧 ویژگی‌های سازگار با prepare_features_03.py:")
-        compatibility_features = ['sentiment_score', 'sentiment_positive', 'sentiment_negative', 'sentiment_neutral']
-        for feature in compatibility_features:
-            if feature in merged_df.columns:
-                non_zero = (merged_df[feature] != 0).sum()
-                print(f"   ✅ {feature}: {non_zero:,} غیرصفر")
-            else:
-                print(f"   ❌ {feature}: موجود نیست")
+            for col in sentiment_features:
+                if 'compound' in col and 'mean' in col:
+                    non_zero_sentiment = (merged_df[col] != 0).sum()
+                    mean_val = merged_df[col].mean()
+                    print(f"   - رکوردهای دارای احساسات: {non_zero_sentiment:,} ({non_zero_sentiment/len(merged_df)*100:.1f}%)")
+                    print(f"   - میانگین احساسات: {mean_val:.4f}")
+                    break
     
     print("\n📁 فایل‌های ذخیره شده:")
     for file_type, path in saved_files.items():
@@ -1106,56 +746,28 @@ def run_unified_processing(process_price: bool = True, process_sentiment: bool =
     
     # نمایش نمونه داده‌های ادغام شده
     if not merged_df.empty:
-        print("\n--- نمونه 5 ردیف از داده‌های ادغام شده (Enhanced + 03 Ready) ---")
-        display_cols = ['open', 'high', 'low', 'close', 'volume']
-        
-        # اضافه کردن ستون‌های احساسات مهم برای فایل 03
-        sentiment_display_cols = []
-        priority_cols = ['sentiment_score', 'sentiment_positive', 'reddit_score', 'source_diversity']
-        for col in priority_cols:
-            if col in merged_df.columns:
-                sentiment_display_cols.append(col)
-            if len(sentiment_display_cols) >= 3:  # حداکثر 3 ستون احساسات
-                break
-        
-        # اگر ستون‌های اولویت‌دار وجود نداشت، از سایر ستون‌ها استفاده کن
-        if not sentiment_display_cols:
-            for col in merged_df.columns:
-                if 'sentiment' in col or 'reddit' in col:
-                    sentiment_display_cols.append(col)
-                if len(sentiment_display_cols) >= 3:
-                    break
-        
-        display_cols.extend(sentiment_display_cols)
+        print("\n--- نمونه 5 ردیف از داده‌های ادغام شده ---")
+        display_cols = ['open', 'high', 'low', 'close', 'volume'] + \
+                      [col for col in merged_df.columns if 'sentiment' in col][:3]
         print(merged_df[display_cols].head())
 
 def get_user_options():
     """دریافت تنظیمات از کاربر"""
     print("\n" + "="*60)
-    print("⚙️ تنظیمات پردازش یکپارچه (Enhanced - سازگار با fetch_01_fixed + Telegram)")
+    print("⚙️ تنظیمات پردازش یکپارچه (نسخه اصلاح شده)")
     print("="*60)
     
     print("\nانتخاب کنید چه داده‌هایی پردازش شوند:")
     print("1. فقط داده‌های قیمت")
     print("2. فقط داده‌های احساسات")
     print("3. هر دو (قیمت و احساسات) - بدون ادغام")
-    print("4. هر دو + ادغام (توصیه می‌شود) - آماده برای prepare_features_03.py")
+    print("4. هر دو + ادغام (توصیه می‌شود)")
     
     choice = input("\nانتخاب شما (پیش‌فرض: 4): ").strip() or '4'
     
     process_price = choice in ['1', '3', '4']
     process_sentiment = choice in ['2', '3', '4']
     merge_data = choice == '4'
-    
-    print("\n🔧 ویژگی‌های نسخه Enhanced + 03 Compatible:")
-    print("✅ سازگاری کامل با fetch_historical_data_01.py")
-    print("✅ پشتیبانی از منابع جدید: Reddit, NewsAPI, RSS, CoinGecko, Telegram")
-    print("✅ تشخیص هوشمند فایل‌های قیمت و خبری")
-    print("✅ Broadcasting احساسات برای حل مشکل عدم تطبیق زمانی")
-    print("✅ آمار تفصیلی منابع خبری")
-    print("🆕 اضافه کردن ستون‌های سازگار با prepare_features_03.py")
-    print("🆕 پشتیبانی از Telegram features")
-    print("🆕 نگاشت sentiment_compound_mean -> sentiment_score")
     
     return process_price, process_sentiment, merge_data
 
